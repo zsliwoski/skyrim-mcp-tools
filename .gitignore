@@ -1,0 +1,22 @@
+# Generated plugins, scripts, snapshots, packages and backups
+/output/
+
+# Extracted vanilla Papyrus sources (Bethesda content)
+/papyrus_src/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Backups
+*.bak

@@ -1,0 +1,184 @@
+"""Load order management for Bethesda plugins."""
+
+from pathlib import Path
+from typing import List, Optional, Union
+from .game_discovery import find_game, GameInstall
+from .utils import is_readable_file
+
+
+class LoadOrder:
+    """Represents an ordered list of plugins to load.
+
+    Each entry is a (plugin_name, active) tuple. Active plugins have '*'
+    prefix in plugins.txt. The implicit masters (game ESM files) are
+    always loaded first even if not listed.
+    """
+
+    # Implicit masters per game that are always loaded first
+    _IMPLICIT_MASTERS = {
+        'tes5': [
+            'Skyrim.esm', 'Update.esm', 'Dawnguard.esm',
+            'HearthFires.esm', 'Dragonborn.esm',
+        ],
+        'fo4': [
+            'Fallout4.esm', 'DLCRobot.esm', 'DLCworkshop01.esm',
+            'DLCCoast.esm', 'DLCworkshop02.esm', 'DLCworkshop03.esm',
+            'DLCNukaWorld.esm',
+        ],
+        'sf1': [
+            'Starfield.esm',
+        ],
+    }
+
+    def __init__(self, plugins: List[str], data_dir: Optional[Path] = None,
+                 game_id: str = '', fallback_dir: Optional[Path] = None):
+        self.plugins = plugins
+        self.data_dir = data_dir
+        # Optional second dir searched when a plugin isn't in data_dir — lets a
+        # caller point data_dir at an override (a mod or test fixtures) while
+        # still finding the base game/DLC plugins in the real Data folder.
+        self.fallback_dir = fallback_dir
+        self.game_id = game_id
+
+    @classmethod
+    def from_game(cls, game_id: str,
+                  active_only: bool = False) -> 'LoadOrder':
+        """Load the load order from the game's plugins.txt.
+
+        If active_only is True, only include plugins marked active
+        (prefixed with '*') and implicit masters.
+
+        Creation Club plugins listed in the game's .ccc file are
+        inserted after the implicit masters, matching the game engine's
+        load order.
+        """
+        game = find_game(game_id)
+        if game is None:
+            raise FileNotFoundError(f"Game not found: {game_id}")
+
+        plugins_txt = game.plugins_txt()
+        if plugins_txt is None:
+            raise FileNotFoundError(
+                f"plugins.txt not found for {game.name}")
+
+        plugins = cls._parse_plugins_txt(
+            plugins_txt, game_id, active_only=active_only,
+            ccc_file=game.ccc_file(), data_dir=game.data_dir)
+        return cls(plugins=plugins, data_dir=game.data_dir, game_id=game_id)
+
+    @classmethod
+    def from_list(cls, plugin_names: List[str],
+                  data_dir: Union[str, Path, None] = None,
+                  game_id: str = '',
+                  fallback_dir: Union[str, Path, None] = None) -> 'LoadOrder':
+        """Create a load order from an explicit list of plugin filenames."""
+        data_path = Path(data_dir) if data_dir else None
+        fb_path = Path(fallback_dir) if fallback_dir else None
+        return cls(plugins=list(plugin_names), data_dir=data_path,
+                   game_id=game_id, fallback_dir=fb_path)
+
+    @classmethod
+    def _parse_plugins_txt(cls, path: Path, game_id: str,
+                           active_only: bool = False,
+                           ccc_file: Optional[Path] = None,
+                           data_dir: Optional[Path] = None) -> List[str]:
+        """Parse plugins.txt into an ordered list of plugin names.
+
+        Format:
+          # comments
+          *active_plugin.esp     (active, loaded by game)
+          inactive_plugin.esp    (inactive, not loaded)
+
+        If active_only is True, only plugins prefixed with '*' are
+        included (plus implicit masters which are always active).
+
+        If ccc_file is provided, Creation Club plugins are inserted
+        after implicit masters (only those that exist in data_dir).
+        """
+        plugins = []
+
+        # Add implicit masters first
+        implicits = cls._IMPLICIT_MASTERS.get(game_id, [])
+        plugins.extend(implicits)
+
+        # Add Creation Club plugins from .ccc file
+        if ccc_file is not None:
+            cc_text = ccc_file.read_text(encoding='utf-8', errors='replace')
+            for line in cc_text.splitlines():
+                name = line.strip()
+                if not name:
+                    continue
+                # Only include CC plugins we can actually read. Not
+                # exists() — a modlist that ships Creation Club content
+                # as an MO2 mod would have every one of them dropped
+                # here. See esplib.utils.is_readable_file.
+                if data_dir and not is_readable_file(data_dir / name):
+                    continue
+                if name.lower() not in [p.lower() for p in plugins]:
+                    plugins.append(name)
+
+        text = path.read_text(encoding='utf-8', errors='replace')
+        already = {p.lower() for p in plugins}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            active = line.startswith('*')
+            name = line.lstrip('*').strip()
+
+            # Skip if already added (implicit master or CC plugin)
+            if name.lower() in already:
+                continue
+
+            if active_only and not active:
+                continue
+
+            plugins.append(name)
+            already.add(name.lower())
+
+        return plugins
+
+    def plugin_path(self, name: str) -> Optional[Path]:
+        """Get the full path to a plugin file (data_dir first, then fallback).
+
+        Existence is decided by opening the file, not by ``exists()``.
+        Under Mod Organizer's virtual filesystem those two disagree: a
+        plugin supplied by a mod is visible to directory enumeration and
+        opens perfectly well, while ``stat`` — which is what ``exists()``
+        and ``is_file()`` call — reports it absent. usvfs detours a fixed
+        set of file APIs, and the one CPython uses for stat isn't among
+        them, so the merged view is invisible to exactly that question.
+
+        The practical result was that every mod in an MO2 load order
+        looked missing to us while cmd.exe, xEdit and the game all saw
+        them. Opening is the honest test anyway: the caller's next move
+        is to read the file, so a path that opens is the only kind worth
+        returning.
+        """
+        for root in (self.data_dir, self.fallback_dir):
+            if root:
+                p = root / name
+                if is_readable_file(p):
+                    return p
+        return None
+
+    def index_of(self, name: str) -> int:
+        """Get the load order index of a plugin (-1 if not found)."""
+        name_lower = name.lower()
+        for i, p in enumerate(self.plugins):
+            if p.lower() == name_lower:
+                return i
+        return -1
+
+    def __len__(self) -> int:
+        return len(self.plugins)
+
+    def __iter__(self):
+        return iter(self.plugins)
+
+    def __getitem__(self, index):
+        return self.plugins[index]
+
+    def __repr__(self) -> str:
+        return f"LoadOrder({len(self.plugins)} plugins, game={self.game_id!r})"

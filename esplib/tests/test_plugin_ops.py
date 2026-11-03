@@ -1,0 +1,1232 @@
+"""Tests for plugin operations: copy/patch, localized strings, masters,
+FormID remap, and tint auto-sort.
+"""
+
+import struct
+import tempfile
+import pytest
+from pathlib import Path
+
+from esplib import Plugin, Record, FormID, AbsoluteFormID
+from esplib.record import SubRecord
+from esplib.game_discovery import find_game
+
+from tests.conftest import (
+    find_skyrim_esm, find_skyrim_data, find_strings_dir,
+    make_simple_plugin, make_subrecord, make_record, make_group,
+    make_tes4_record,
+)
+
+
+# ===================================================================
+# Copy / Patch
+# ===================================================================
+
+
+class TestStructCopy:
+
+
+    def test_copy_preserves_fields(self):
+        record = Record('WEAP', FormID(0x800), 0x10)
+        record.timestamp = 0xDEAD
+        record.version = 44
+        record.version_control_info = 0xBEEF
+        record.add_subrecord('EDID', b'TestWeapon\x00')
+        record.add_subrecord('DATA', struct.pack('<Ifh', 25, 0, 7))
+
+        copy = record.copy()
+        assert copy.signature == 'WEAP'
+        assert copy.form_id.value == 0x800
+        assert copy.flags == 0x10
+        assert copy.timestamp == 0xDEAD
+        assert copy.version == 44
+        assert copy.version_control_info == 0xBEEF
+        assert len(copy.subrecords) == 2
+        assert copy.subrecords[0].get_string() == 'TestWeapon'
+
+
+    def test_copy_is_independent(self):
+        record = Record('WEAP', FormID(0x800), 0)
+        record.add_subrecord('EDID', b'Original\x00')
+
+        copy = record.copy()
+        copy.subrecords[0].set_string('Modified')
+
+        assert record.subrecords[0].get_string() == 'Original'
+        assert copy.subrecords[0].get_string() == 'Modified'
+
+
+    def test_copy_preserves_schema(self):
+        from esplib.defs import tes5
+
+        record = Record('WEAP', FormID(0x800), 0)
+        record.schema = tes5.WEAP
+        copy = record.copy()
+        assert copy.schema is tes5.WEAP
+
+
+    def test_has_subrecord(self):
+        record = Record('WEAP', FormID(0x800), 0)
+        record.add_subrecord('EDID', b'Test\x00')
+        assert record.has_subrecord('EDID')
+        assert not record.has_subrecord('DATA')
+
+
+class TestStructNewPlugin:
+
+
+    def test_new_plugin_basic(self, tmp_path):
+        plugin = Plugin.new_plugin(tmp_path / 'test.esp',
+                                   masters=['Skyrim.esm'])
+        assert plugin.header.masters == ['Skyrim.esm']
+        assert plugin.header.version == 1.71
+        assert not plugin.header.is_esm
+
+
+    def test_new_plugin_esm(self, tmp_path):
+        plugin = Plugin.new_plugin(tmp_path / 'test.esm',
+                                   masters=['Skyrim.esm'],
+                                   is_esm=True)
+        assert plugin.header.is_esm
+
+
+    def test_new_plugin_no_masters(self, tmp_path):
+        plugin = Plugin.new_plugin(tmp_path / 'test.esm')
+        assert plugin.header.masters == []
+
+
+class TestStructAddMaster:
+
+
+    def test_add_master(self):
+        plugin = Plugin()
+        plugin.add_master('Skyrim.esm')
+        assert plugin.header.masters == ['Skyrim.esm']
+
+
+    def test_add_master_dedup(self):
+        plugin = Plugin()
+        plugin.add_master('Skyrim.esm')
+        plugin.add_master('Skyrim.esm')
+        assert len(plugin.header.masters) == 1
+
+
+    def test_add_master_case_insensitive_dedup(self):
+        plugin = Plugin()
+        plugin.add_master('Skyrim.esm')
+        plugin.add_master('skyrim.esm')
+        assert len(plugin.header.masters) == 1
+
+
+    def test_add_multiple_masters(self):
+        plugin = Plugin()
+        plugin.add_master('Skyrim.esm')
+        plugin.add_master('Update.esm')
+        plugin.add_master('Dawnguard.esm')
+        assert len(plugin.header.masters) == 3
+
+
+    def test_add_master_rejects_self(self, tmp_path):
+        """A plugin cannot master itself. The lazy-add path in
+        denormalize_form_id can reach add_master with the plugin's
+        own name when records' finalized form_ids round-trip
+        through a load order that includes the plugin (e.g.
+        furrifier's _inject_patch_into_plugin_set). xEdit reports
+        such files as circular references."""
+        plugin = Plugin.new_plugin(tmp_path / 'MyPatch.esp')
+        plugin.add_master('MyPatch.esp')
+        assert 'MyPatch.esp' not in plugin.header.masters
+        # Case-insensitive guard too.
+        plugin.add_master('MYPATCH.ESP')
+        assert plugin.header.masters == []
+
+
+class TestPluginAddRecursiveMasters:
+
+
+    def test_recursive_masters(self, tmp_path):
+        source = Plugin.new_plugin(tmp_path / 'source.esp',
+                                   masters=['Skyrim.esm', 'Update.esm'])
+        source.save()
+
+        target = Plugin.new_plugin(tmp_path / 'target.esp')
+        target.add_recursive_masters(source)
+
+        assert 'Skyrim.esm' in target.header.masters
+        assert 'Update.esm' in target.header.masters
+        assert 'source.esp' in target.header.masters
+
+
+    def test_recursive_no_duplicates(self, tmp_path):
+        source = Plugin.new_plugin(tmp_path / 'mod.esp',
+                                   masters=['Skyrim.esm'])
+        source.save()
+
+        target = Plugin.new_plugin(tmp_path / 'patch.esp',
+                                   masters=['Skyrim.esm'])
+        target.add_recursive_masters(source)
+
+        assert target.header.masters.count('Skyrim.esm') == 1
+        assert 'mod.esp' in target.header.masters
+
+
+class TestPluginCopyRecord:
+
+
+    def test_copy_record_to_plugin(self, tmp_path):
+        source = Plugin.new_plugin(tmp_path / 'source.esp',
+                                   masters=['Skyrim.esm'])
+        weap = Record('WEAP', FormID(0x01000800), 0)
+        weap.add_subrecord('EDID', b'TestSword\x00')
+        weap.add_subrecord('DATA', struct.pack('<Ifh', 25, 0, 7))
+        source.add_record(weap)
+        source.save()
+
+        target = Plugin.new_plugin(tmp_path / 'target.esp')
+        copied = target.copy_record(weap, source)
+
+        assert copied.editor_id == 'TestSword'
+        assert len(target.records) == 1
+        # Only source.esp is added as master — Skyrim.esm is not
+        # referenced by any FormID in the copied record
+        assert 'source.esp' in target.header.masters
+
+
+    def test_copy_record_preserves_data(self, tmp_path):
+        source = Plugin.new_plugin(tmp_path / 'src.esp')
+        rec = Record('MISC', FormID(0x800), 0)
+        rec.add_subrecord('EDID', b'Gold\x00')
+        rec.add_subrecord('DATA', struct.pack('<if', 1, 0.0))
+        source.add_record(rec)
+
+        target = Plugin.new_plugin(tmp_path / 'tgt.esp')
+        copied = target.copy_record(rec)
+
+        rec.subrecords[0].set_string('Changed')
+        assert copied.editor_id == 'Gold'
+
+
+    def test_save_and_reload_copied_plugin(self, tmp_path):
+        source = Plugin.new_plugin(tmp_path / 'src.esp',
+                                   masters=['Skyrim.esm'])
+        rec = Record('WEAP', FormID(0x00012EB7), 0)
+        rec.add_subrecord('EDID', b'IronSword\x00')
+        source.add_record(rec)
+        source.save()
+
+        target = Plugin.new_plugin(tmp_path / 'patch.esp')
+        target.copy_record(rec, source)
+        target.save()
+
+        reloaded = Plugin(tmp_path / 'patch.esp')
+        assert len(reloaded.records) == 1
+        assert reloaded.records[0].editor_id == 'IronSword'
+        assert 'Skyrim.esm' in reloaded.header.masters
+
+
+class TestCopyFromSkyrim:
+
+
+    @pytest.mark.gamefiles
+    @pytest.mark.slow
+    def test_copy_iron_sword(self, skyrim_plugin, tmp_path):
+        skyrim = skyrim_plugin
+        sword = skyrim.get_record_by_editor_id('IronSword')
+        assert sword is not None
+
+        patch = Plugin.new_plugin(tmp_path / 'test_patch.esp')
+        copied = patch.copy_record(sword, skyrim)
+        patch.save()
+
+        reloaded = Plugin(tmp_path / 'test_patch.esp')
+        assert len(reloaded.records) == 1
+        assert reloaded.records[0].form_id.value == sword.form_id.value
+
+
+# ===================================================================
+# Localized Strings
+# ===================================================================
+
+
+class TestLocalizedFullName:
+    """full_name resolves correctly for localized plugins."""
+
+
+    @pytest.mark.gamefiles
+    def test_plugin_is_localized(self, skyrim_plugin):
+        assert skyrim_plugin.is_localized
+
+
+    @pytest.mark.gamefiles
+    def test_string_tables_loaded(self, skyrim_plugin):
+        assert skyrim_plugin.string_tables is not None
+        assert skyrim_plugin.string_tables.strings is not None
+
+
+    @pytest.mark.gamefiles
+    def test_nord_race_name(self, skyrim_plugin):
+        for r in skyrim_plugin.get_records_by_signature('RACE'):
+            if r.editor_id == 'NordRace':
+                assert r.full_name == 'Nord'
+                return
+        pytest.fail("NordRace not found")
+
+
+    @pytest.mark.gamefiles
+    def test_breton_race_name(self, skyrim_plugin):
+        for r in skyrim_plugin.get_records_by_signature('RACE'):
+            if r.editor_id == 'BretonRace':
+                assert r.full_name == 'Breton'
+                return
+        pytest.fail("BretonRace not found")
+
+
+    @pytest.mark.gamefiles
+    def test_dark_elf_race_name(self, skyrim_plugin):
+        for r in skyrim_plugin.get_records_by_signature('RACE'):
+            if r.editor_id == 'DarkElfRace':
+                assert r.full_name == 'Dark Elf'
+                return
+        pytest.fail("DarkElfRace not found")
+
+
+    @pytest.mark.gamefiles
+    def test_iron_sword_name(self, skyrim_plugin):
+        for r in skyrim_plugin.get_records_by_signature('WEAP'):
+            if r.editor_id == 'IronSword':
+                assert r.full_name == 'Iron Sword'
+                return
+        pytest.fail("IronSword not found")
+
+
+class TestStructCopyDelocalization:
+    """copy_record converts localized string IDs to inline strings."""
+
+
+    def _make_localized_plugin(self, strings_dict):
+        """Create a minimal localized plugin with string tables in memory."""
+        from esplib.strings import StringTable, StringTableManager
+
+        p = Plugin()
+        p.header.is_localized = True
+        p.file_path = Path(tempfile.mkdtemp()) / 'Localized.esm'
+
+        mgr = StringTableManager()
+        mgr.strings = StringTable(StringTable.STRINGS)
+        for sid, text in strings_dict.items():
+            mgr.strings.set(sid, text)
+        p.string_tables = mgr
+
+        return p
+
+
+    def test_delocalize_full(self):
+        """FULL subrecord is converted from string ID to inline string."""
+        source = self._make_localized_plugin({42: 'Iron Sword'})
+
+        rec = Record('WEAP', FormID(0x100), 0)
+        rec.add_subrecord('EDID', b'IronSword\x00')
+        rec.add_subrecord('FULL', struct.pack('<I', 42))
+        rec.plugin = source
+
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Patch.esp',
+                                 masters=['Localized.esm'])
+
+        copied = dest.copy_record(rec)
+        full = copied.get_subrecord('FULL')
+        assert full.get_string() == 'Iron Sword'
+
+
+    def test_delocalize_shrt(self):
+        """SHRT subrecord is also delocalized."""
+        source = self._make_localized_plugin({99: 'Balgruuf'})
+
+        rec = Record('NPC_', FormID(0x100), 0)
+        rec.add_subrecord('EDID', b'TestNPC\x00')
+        rec.add_subrecord('SHRT', struct.pack('<I', 99))
+        rec.plugin = source
+
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Patch.esp',
+                                 masters=['Localized.esm'])
+
+        copied = dest.copy_record(rec)
+        shrt = copied.get_subrecord('SHRT')
+        assert shrt.get_string() == 'Balgruuf'
+
+
+    def test_no_delocalize_when_dest_localized(self):
+        """If destination is also localized, string IDs are preserved."""
+        source = self._make_localized_plugin({42: 'Iron Sword'})
+
+        rec = Record('WEAP', FormID(0x100), 0)
+        rec.add_subrecord('FULL', struct.pack('<I', 42))
+        rec.plugin = source
+
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Patch.esm')
+        dest.header.is_localized = True
+
+        copied = dest.copy_record(rec)
+        full = copied.get_subrecord('FULL')
+        assert full.size == 4
+        assert struct.unpack('<I', full.data)[0] == 42
+
+
+    def test_no_delocalize_nonlocalized_source(self):
+        """Non-localized source records are copied as-is."""
+        rec = Record('WEAP', FormID(0x100), 0)
+        rec.add_subrecord('FULL', b'Iron Sword\x00')
+
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Patch.esp')
+
+        copied = dest.copy_record(rec)
+        full = copied.get_subrecord('FULL')
+        assert full.get_string() == 'Iron Sword'
+
+
+class TestDelocalizeGamefiles:
+    """String delocalization with real Skyrim.esm."""
+
+
+    @pytest.mark.gamefiles
+    def test_copy_race_delocalizes_full(self, skyrim_plugin):
+        """Copying NordRace from Skyrim.esm delocalizes FULL to 'Nord'."""
+        if not skyrim_plugin.string_tables:
+            assert False, "String tables not loaded"
+
+        nord = None
+        for r in skyrim_plugin.get_records_by_signature('RACE'):
+            if r.editor_id == 'NordRace':
+                nord = r
+                break
+        assert nord is not None
+
+        dest = Plugin.new_plugin(
+            Path(tempfile.mkdtemp()) / 'Patch.esp',
+            masters=['Skyrim.esm'])
+
+        copied = dest.copy_record(nord)
+        full = copied.get_subrecord('FULL')
+        assert full is not None
+        assert full.size > 4, "FULL should be delocalized inline string"
+        assert full.get_string() == 'Nord'
+
+
+# ===================================================================
+# Masters / Overrides
+# ===================================================================
+
+
+class TestStructLoadOrder:
+
+
+    def test_from_list(self):
+        from esplib import LoadOrder
+        lo = LoadOrder.from_list(['Skyrim.esm', 'Update.esm', 'MyMod.esp'])
+        assert len(lo) == 3
+        assert lo[0] == 'Skyrim.esm'
+        assert lo[2] == 'MyMod.esp'
+
+
+    def test_index_of(self):
+        from esplib import LoadOrder
+        lo = LoadOrder.from_list(['Skyrim.esm', 'Update.esm', 'MyMod.esp'])
+        assert lo.index_of('Update.esm') == 1
+        assert lo.index_of('update.esm') == 1  # case insensitive
+        assert lo.index_of('NotHere.esp') == -1
+
+
+    def test_iteration(self):
+        from esplib import LoadOrder
+        lo = LoadOrder.from_list(['A.esm', 'B.esp'])
+        assert list(lo) == ['A.esm', 'B.esp']
+
+
+class TestLoadOrderSkyrim:
+
+
+    @pytest.mark.gamefiles
+    def test_from_game_skyrim(self):
+        from esplib import LoadOrder
+        game = find_game('tes5')
+        if game is None:
+            assert False, "Skyrim SE not installed"
+        lo = LoadOrder.from_game('tes5')
+        assert len(lo) > 0
+        assert lo[0] == 'Skyrim.esm'
+        assert 'Update.esm' in lo.plugins[:5]
+
+
+def _make_test_plugin(name: str, masters: list, records: list, tmp_path: Path) -> Path:
+    """Create a minimal test plugin file on disk."""
+    from esplib.utils import BinaryReader
+
+    plugin = Plugin()
+    plugin.header.version = 1.71
+    plugin.header.masters = masters
+    plugin.header.master_sizes = [0] * len(masters)
+    if name.lower().endswith('.esm'):
+        plugin.header.is_esm = True
+
+    for sig, fid, sub_bytes in records:
+        rec = Record(sig, FormID(fid), 0)
+        rec.version = 44
+        reader = BinaryReader(sub_bytes)
+        while not reader.at_end() and reader.remaining() >= 6:
+            sr_sig = reader.read_bytes(4).decode('ascii')
+            sr_size = reader.read_uint16()
+            sr_data = reader.read_bytes(sr_size)
+            rec.subrecords.append(SubRecord(sr_sig, sr_data))
+        plugin.add_record(rec)
+
+    path = tmp_path / name
+    plugin.save(path)
+    return path
+
+
+class TestPluginSetSynthetic:
+
+
+    def test_override_chain_basic(self, tmp_path):
+        """Master defines a record, plugin overrides it."""
+        from esplib import LoadOrder, PluginSet
+
+        edid_sub = make_subrecord('EDID', b'TestWeapon\x00')
+        data_sub = make_subrecord('DATA', struct.pack('<Ifh', 10, 0, 5))
+
+        _make_test_plugin(
+            'TestMaster.esm', [], [('WEAP', 0x00000800, edid_sub + data_sub)], tmp_path)
+
+        data_sub2 = make_subrecord('DATA', struct.pack('<Ifh', 99, 0, 50))
+        _make_test_plugin(
+            'TestOverride.esp', ['TestMaster.esm'],
+            [('WEAP', 0x00000800, edid_sub + data_sub2)], tmp_path)
+
+        lo = LoadOrder.from_list(
+            ['TestMaster.esm', 'TestOverride.esp'],
+            data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        chain = ps.get_override_chain(0x00000800)
+        assert chain is not None
+        assert len(chain) == 2
+        assert chain[0].get_subrecord('DATA').get_uint32() == 10
+        assert chain[-1].get_subrecord('DATA').get_uint32() == 99
+
+
+    def test_single_record_no_override(self, tmp_path):
+        """A record with no overrides has chain length 1."""
+        from esplib import LoadOrder, PluginSet
+
+        edid_sub = make_subrecord('EDID', b'Unique\x00')
+        _make_test_plugin(
+            'Solo.esm', [], [('MISC', 0x00000800, edid_sub)], tmp_path)
+
+        lo = LoadOrder.from_list(['Solo.esm'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        chain = ps.get_override_chain(0x00000800)
+        assert chain is not None
+        assert len(chain) == 1
+        assert chain[0] is chain[-1]
+
+
+    def test_three_way_override(self, tmp_path):
+        """Three plugins: master, patch A, patch B."""
+        from esplib import LoadOrder, PluginSet
+
+        edid_sub = make_subrecord('EDID', b'Item\x00')
+
+        data_base = make_subrecord('DATA', struct.pack('<I', 10))
+        data_a = make_subrecord('DATA', struct.pack('<I', 20))
+        data_b = make_subrecord('DATA', struct.pack('<I', 30))
+
+        _make_test_plugin('Base.esm', [],
+                          [('MISC', 0x00000800, edid_sub + data_base)], tmp_path)
+        _make_test_plugin('PatchA.esp', ['Base.esm'],
+                          [('MISC', 0x00000800, edid_sub + data_a)], tmp_path)
+        _make_test_plugin('PatchB.esp', ['Base.esm'],
+                          [('MISC', 0x00000800, edid_sub + data_b)], tmp_path)
+
+        lo = LoadOrder.from_list(
+            ['Base.esm', 'PatchA.esp', 'PatchB.esp'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        chain = ps.get_override_chain(0x00000800)
+        assert len(chain) == 3
+        assert chain[0].get_subrecord('DATA').get_uint32() == 10
+        assert chain[1].get_subrecord('DATA').get_uint32() == 20
+        assert chain[-1].get_subrecord('DATA').get_uint32() == 30
+
+
+    def test_overridden_records_iterator(self, tmp_path):
+        """overridden_records() yields only FormIDs with multiple entries."""
+        from esplib import LoadOrder, PluginSet
+
+        edid1 = make_subrecord('EDID', b'Shared\x00')
+        edid2 = make_subrecord('EDID', b'Unique\x00')
+        data = make_subrecord('DATA', struct.pack('<I', 1))
+
+        _make_test_plugin('M.esm', [], [
+            ('MISC', 0x00000800, edid1 + data),
+            ('MISC', 0x00000801, edid2 + data),
+        ], tmp_path)
+        _make_test_plugin('P.esp', ['M.esm'], [
+            ('MISC', 0x00000800, edid1 + data),
+        ], tmp_path)
+
+        lo = LoadOrder.from_list(['M.esm', 'P.esp'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        overridden = list(ps.overridden_records())
+        assert len(overridden) == 1
+        fid, chain = overridden[0]
+        assert (fid & 0x00FFFFFF) == 0x800
+
+
+    def test_missing_plugin_skipped(self, tmp_path):
+        """Plugins not on disk are skipped gracefully."""
+        from esplib import LoadOrder, PluginSet
+
+        edid = make_subrecord('EDID', b'Test\x00')
+        _make_test_plugin('Real.esm', [], [('MISC', 0x800, edid)], tmp_path)
+
+        lo = LoadOrder.from_list(
+            ['Real.esm', 'Missing.esp'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        loaded = ps.load_all()
+        assert loaded == 1
+
+
+    def test_iter_yields_plugins_in_order(self, tmp_path):
+        """__iter__ yields loaded Plugin objects in load order."""
+        from esplib import LoadOrder, PluginSet
+
+        edid = make_subrecord('EDID', b'Test\x00')
+        _make_test_plugin('A.esm', [], [('MISC', 0x800, edid)], tmp_path)
+        _make_test_plugin('B.esp', ['A.esm'], [('MISC', 0x801, edid)], tmp_path)
+        _make_test_plugin('C.esp', ['A.esm'], [('MISC', 0x802, edid)], tmp_path)
+
+        lo = LoadOrder.from_list(['A.esm', 'B.esp', 'C.esp'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        plugins = list(ps)
+        assert len(plugins) == 3
+        assert plugins[0].file_path.name == 'A.esm'
+        assert plugins[1].file_path.name == 'B.esp'
+        assert plugins[2].file_path.name == 'C.esp'
+
+
+    def test_iter_skips_missing(self, tmp_path):
+        """__iter__ skips plugins that failed to load."""
+        from esplib import LoadOrder, PluginSet
+
+        edid = make_subrecord('EDID', b'Test\x00')
+        _make_test_plugin('Real.esm', [], [('MISC', 0x800, edid)], tmp_path)
+
+        lo = LoadOrder.from_list(['Real.esm', 'Missing.esp'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        plugins = list(ps)
+        assert len(plugins) == 1
+        assert plugins[0].file_path.name == 'Real.esm'
+
+
+    def test_resolve_reference(self, tmp_path):
+        """resolve_reference reads a FormID subrecord and finds the target."""
+        from esplib import LoadOrder, PluginSet
+
+        # Master with a race and an NPC that references it via RNAM
+        race_edid = make_subrecord('EDID', b'NordRace\x00')
+        npc_edid = make_subrecord('EDID', b'TestNPC\x00')
+        # RNAM points to FormID 0x00000800 (the race, in master index 0)
+        npc_rnam = make_subrecord('RNAM', struct.pack('<I', 0x00000800))
+
+        _make_test_plugin('Master.esm', [], [
+            ('RACE', 0x00000800, race_edid),
+            ('NPC_', 0x00000801, npc_edid + npc_rnam),
+        ], tmp_path)
+
+        lo = LoadOrder.from_list(['Master.esm'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        npc = ps.get_plugin('Master.esm').get_record_by_editor_id('TestNPC')
+        assert npc is not None
+
+        race = ps.resolve_reference(npc, 'RNAM')
+        assert race is not None
+        assert race.editor_id == 'NordRace'
+
+
+    def test_resolve_reference_cross_plugin(self, tmp_path):
+        """resolve_reference works across plugin boundaries."""
+        from esplib import LoadOrder, PluginSet
+
+        race_edid = make_subrecord('EDID', b'NordRace\x00')
+        _make_test_plugin('Master.esm', [], [
+            ('RACE', 0x00000800, race_edid),
+        ], tmp_path)
+
+        npc_edid = make_subrecord('EDID', b'TestNPC\x00')
+        # RNAM with master index 0 -> Master.esm's record 0x800
+        npc_rnam = make_subrecord('RNAM', struct.pack('<I', 0x00000800))
+        _make_test_plugin('Mod.esp', ['Master.esm'], [
+            ('NPC_', 0x01000900, npc_edid + npc_rnam),
+        ], tmp_path)
+
+        lo = LoadOrder.from_list(['Master.esm', 'Mod.esp'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        npc = ps.get_plugin('Mod.esp').get_record_by_editor_id('TestNPC')
+        assert npc is not None
+
+        race = ps.resolve_reference(npc, 'RNAM')
+        assert race is not None
+        assert race.editor_id == 'NordRace'
+
+
+    def test_resolve_reference_missing_subrecord(self, tmp_path):
+        """resolve_reference returns None when subrecord is absent."""
+        from esplib import LoadOrder, PluginSet
+
+        edid = make_subrecord('EDID', b'TestNPC\x00')
+        _make_test_plugin('M.esm', [], [
+            ('NPC_', 0x00000800, edid),
+        ], tmp_path)
+
+        lo = LoadOrder.from_list(['M.esm'], data_dir=tmp_path)
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        npc = ps.get_plugin('M.esm').get_record_by_editor_id('TestNPC')
+        assert ps.resolve_reference(npc, 'RNAM') is None
+
+
+class TestPluginSetSkyrim:
+
+
+    @pytest.mark.gamefiles
+    @pytest.mark.slow
+    def test_load_skyrim_with_dlc(self):
+        """Load Skyrim.esm + DLC masters."""
+        from esplib import LoadOrder, PluginSet
+
+        game = find_game('tes5')
+        if game is None:
+            assert False, "Skyrim SE not installed"
+
+        lo = LoadOrder.from_list(
+            ['Skyrim.esm', 'Update.esm', 'Dawnguard.esm'],
+            data_dir=game.data_dir, game_id='tes5')
+        ps = PluginSet(lo)
+        loaded = ps.load_all()
+        assert loaded >= 2
+
+
+    @pytest.mark.gamefiles
+    @pytest.mark.slow
+    def test_override_in_update_esm(self):
+        """Update.esm should override some Skyrim.esm records."""
+        from esplib import LoadOrder, PluginSet
+
+        game = find_game('tes5')
+        if game is None:
+            assert False, "Skyrim SE not installed"
+
+        lo = LoadOrder.from_list(
+            ['Skyrim.esm', 'Update.esm'],
+            data_dir=game.data_dir, game_id='tes5')
+        ps = PluginSet(lo)
+        ps.load_all()
+
+        overrides = list(ps.overridden_records())
+        assert len(overrides) > 0, "Update.esm should override some Skyrim.esm records"
+
+
+# ===================================================================
+# FormID Remap
+# ===================================================================
+
+
+class TestStructRemapFormID:
+    """Plugin.remap_formid() translates FormIDs between master lists. Not generally
+    needed -- use copy_record() and PluginSet for most FormID translations."""
+
+
+    def test_remap_local_to_master(self):
+        source = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Source.esp',
+                                   masters=['Skyrim.esm'])
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Dest.esp',
+                                 masters=['Skyrim.esm', 'Source.esp'])
+
+        fid = (1 << 24) | 0x000ABC
+        remapped = dest.remap_formid(fid, source)
+
+        assert (remapped >> 24) & 0xFF == 1
+        assert remapped & 0x00FFFFFF == 0x000ABC
+
+
+    def test_remap_shared_master(self):
+        source = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Source.esp',
+                                   masters=['Skyrim.esm', 'Update.esm'])
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Dest.esp',
+                                 masters=['Skyrim.esm', 'Update.esm', 'Source.esp'])
+
+        fid = 0x00013746
+        remapped = dest.remap_formid(fid, source)
+
+        assert remapped == 0x00013746
+
+
+    def test_remap_different_master_order(self):
+        source = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Source.esp',
+                                   masters=['Skyrim.esm', 'Dawnguard.esm'])
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Dest.esp',
+                                 masters=['Skyrim.esm', 'Update.esm',
+                                          'Dawnguard.esm', 'Source.esp'])
+
+        fid = (1 << 24) | 0x000123
+        remapped = dest.remap_formid(fid, source)
+
+        assert (remapped >> 24) & 0xFF == 2
+        assert remapped & 0x00FFFFFF == 0x000123
+
+
+    def test_remap_unknown_master_unchanged(self):
+        """A FormID referencing an unknown master passes through unchanged."""
+        source = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Source.esp',
+                                   masters=['Skyrim.esm', 'Missing.esm'])
+        dest = Plugin.new_plugin(Path(tempfile.mkdtemp()) / 'Dest.esp',
+                                 masters=['Skyrim.esm'])
+
+        fid = (1 << 24) | 0x000123
+        remapped = dest.remap_formid(fid, source)
+
+        assert remapped == fid
+
+
+class TestRemapFormIDGamefiles:
+    """remap_formid with real game data."""
+
+
+    @pytest.mark.gamefiles
+    def test_remap_skyrim_record(self, skyrim_plugin):
+        """Remap a Skyrim.esm FormID into a patch with different master order."""
+        dest = Plugin.new_plugin(
+            Path(tempfile.mkdtemp()) / 'Patch.esp',
+            masters=['Update.esm', 'Skyrim.esm'])
+
+        nord_fid = 0x00013746
+        remapped = dest.remap_formid(nord_fid, skyrim_plugin)
+
+        assert (remapped >> 24) & 0xFF == 1
+        assert remapped & 0x00FFFFFF == 0x013746
+
+
+# ===================================================================
+# Copy with PluginSet (normalize/denormalize)
+# ===================================================================
+
+
+class TestCopyRecordPluginSet:
+    """copy_record with PluginSet correctly remaps FormIDs via
+    normalize/denormalize, including struct-embedded FormIDs like
+    SNAM (faction+rank) and CNTO (item+count).
+
+    Regression: CC plugin NPCs had unresolved FormIDs because the
+    source plugin was missing from the load order.
+    """
+
+
+    def _make_cc_npc(self, cc_plugin):
+        """Create a synthetic NPC with subrecords that contain FormIDs
+        pointing to records local to the CC plugin, plus the referenced
+        records so FormIDs can be resolved by editor ID.
+        """
+        local_fi = len(cc_plugin.header.masters)
+
+        def local_fid(object_index):
+            return FormID((local_fi << 24) | object_index)
+
+        # Referenced records
+        cc_plugin.new_record('FACT', edid='TestCCFaction', form_id=0x00083D)
+        cc_plugin.new_record('NPC_', edid='TestCCTemplate', form_id=0x0009B7)
+        cc_plugin.new_record('ARMO', edid='TestCCItem', form_id=0x0009DB)
+        cc_plugin.new_record('OTFT', edid='TestCCOutfit', form_id=0x000A00)
+
+        # The NPC record itself
+        rec = cc_plugin.new_record('NPC_', edid='TestCCNPC', form_id=0x0009B8)
+
+        # Schema-aware field writes
+        rec['SNAM'] = {'faction': local_fid(0x00083D), 'rank': 0}
+        rec['TPLT'] = local_fid(0x0009B7)
+        rec['DOFT'] = local_fid(0x000A00)
+
+        # CNTO is repeating — first item local, second from Skyrim.esm
+        cnto_member = rec.schema.get_member('CNTO')
+        rec.add_subrecord('CNTO', cnto_member.to_subrecord_data(
+            {'item': local_fid(0x0009DB), 'count': 1}))
+        rec.add_subrecord('CNTO', cnto_member.to_subrecord_data(
+            {'item': FormID(0x00037C2B), 'count': 3}))
+
+        return rec
+
+
+    def test_cc_npc_formids_remapped_correctly(self, tmp_path):
+        """All FormIDs (simple + struct) in a CC-like NPC are correctly
+        remapped when copied via PluginSet."""
+        from esplib import PluginSet, LoadOrder
+
+        # Simulate a CC plugin with 5 masters (like ccBGSSSE025)
+        cc_path = tmp_path / 'ccTest.esm'
+        cc = Plugin.new_plugin(cc_path, masters=[
+            'Skyrim.esm', 'Update.esm', 'Dawnguard.esm',
+            'HearthFires.esm', 'Dragonborn.esm',
+        ])
+        npc = self._make_cc_npc(cc)
+
+        # Build a load order that includes the CC plugin
+        lo = LoadOrder.from_list([
+            'Skyrim.esm', 'Update.esm', 'Dawnguard.esm',
+            'HearthFires.esm', 'Dragonborn.esm',
+            'ccTest.esm',
+        ], data_dir=tmp_path)
+
+        # Save the CC plugin so PluginSet can load it
+        cc.save()
+
+        ps = PluginSet(lo)
+        ps.load_all()
+        cc_loaded = ps.get_plugin('ccTest.esm')
+        assert cc_loaded is not None
+
+        npc_rec = cc_loaded.get_record_by_editor_id('TestCCNPC')
+        assert npc_rec is not None
+
+        # Create patch and copy
+        patch = Plugin.new_plugin(tmp_path / 'Patch.esp')
+        patch.plugin_set = ps
+
+        patched = patch.copy_record(npc_rec)
+
+        # Verify: ccTest.esm should be a master of the patch
+        cc_master_idx = None
+        for i, m in enumerate(patch.header.masters):
+            if m.lower() == 'cctest.esm':
+                cc_master_idx = i
+                break
+        assert cc_master_idx is not None, \
+            f"ccTest.esm not in patch masters: {patch.header.masters}"
+
+        skyrim_idx = None
+        for i, m in enumerate(patch.header.masters):
+            if m.lower() == 'skyrim.esm':
+                skyrim_idx = i
+                break
+        assert skyrim_idx is not None
+
+        # Record-level FormID should point to CC plugin
+        assert patched.form_id.file_index == cc_master_idx
+        assert patched.form_id.object_index == 0x0009B8
+
+        # SNAM faction (struct offset 0) -> CC plugin
+        snam = patched.get_subrecord('SNAM')
+        snam_fid = struct.unpack_from('<I', snam.data, 0)[0]
+        assert (snam_fid >> 24) == cc_master_idx
+        assert (snam_fid & 0x00FFFFFF) == 0x00083D
+
+        # TPLT -> CC plugin
+        tplt = patched.get_subrecord('TPLT')
+        tplt_fid = struct.unpack_from('<I', tplt.data, 0)[0]
+        assert (tplt_fid >> 24) == cc_master_idx
+        assert (tplt_fid & 0x00FFFFFF) == 0x0009B7
+
+        # CNTO[0] item -> CC plugin
+        cntos = patched.get_subrecords('CNTO')
+        cnto0_fid = struct.unpack_from('<I', cntos[0].data, 0)[0]
+        assert (cnto0_fid >> 24) == cc_master_idx
+        assert (cnto0_fid & 0x00FFFFFF) == 0x0009DB
+
+        # CNTO[1] item -> Skyrim.esm
+        cnto1_fid = struct.unpack_from('<I', cntos[1].data, 0)[0]
+        assert (cnto1_fid >> 24) == skyrim_idx
+        assert (cnto1_fid & 0x00FFFFFF) == 0x037C2B
+
+        # DOFT -> CC plugin
+        doft = patched.get_subrecord('DOFT')
+        doft_fid = struct.unpack_from('<I', doft.data, 0)[0]
+        assert (doft_fid >> 24) == cc_master_idx
+        assert (doft_fid & 0x00FFFFFF) == 0x000A00
+
+
+    def test_cc_npc_survives_save_reload(self, tmp_path):
+        """FormIDs remain valid after save and reload — resolved references
+        point to the correct records."""
+        from esplib import PluginSet
+
+        cc_path = tmp_path / 'ccTest.esm'
+        cc = Plugin.new_plugin(cc_path, masters=[
+            'Skyrim.esm', 'Update.esm', 'Dawnguard.esm',
+            'HearthFires.esm', 'Dragonborn.esm',
+        ])
+        self._make_cc_npc(cc)
+        cc.save()
+
+        ps = PluginSet.from_plugin(cc_path)
+        cc_loaded = ps.get_plugin('ccTest.esm')
+        npc_rec = cc_loaded.get_record_by_editor_id('TestCCNPC')
+
+        patch_path = tmp_path / 'Patch.esp'
+        patch = Plugin.new_plugin(patch_path)
+        patch.plugin_set = ps
+        patch.copy_record(npc_rec)
+        patch.save()
+
+        # Reload via PluginSet so FormIDs can be resolved
+        ps2 = PluginSet.from_plugin(patch_path)
+        patch_loaded = ps2.get_plugin('Patch.esp')
+        npc_reloaded = patch_loaded.get_record_by_editor_id('TestCCNPC')
+
+        # Simple FormID fields resolve to correct records
+        template_rec = ps2.resolve_reference(npc_reloaded, 'TPLT')
+        assert template_rec is not None
+        assert template_rec.editor_id == 'TestCCTemplate'
+
+        outfit_rec = ps2.resolve_reference(npc_reloaded, 'DOFT')
+        assert outfit_rec is not None
+        assert outfit_rec.editor_id == 'TestCCOutfit'
+
+        # Struct field: SNAM (faction + rank)
+        # Schema access returns AbsoluteFormID (already normalized)
+        snam_data = npc_reloaded['SNAM']
+        faction_fid = snam_data['faction']
+        assert isinstance(faction_fid, AbsoluteFormID)
+        faction_rec = ps2.resolve_form_id(faction_fid)
+        assert faction_rec is not None
+        assert faction_rec.editor_id == 'TestCCFaction'
+
+        # Repeating struct: CNTO items
+        cntos = npc_reloaded.get_subrecords('CNTO')
+        assert len(cntos) == 2
+
+        item0_fid = cntos[0].get_form_id()
+        item0_rec = ps2.resolve_form_id(item0_fid, npc_reloaded.plugin)
+        assert item0_rec is not None
+        assert item0_rec.editor_id == 'TestCCItem'
+
+        # Second item references Skyrim.esm (not loaded) — verify FormID only
+        item1_fid = cntos[1].get_form_id()
+        assert item1_fid.object_index == 0x037C2B
+
+
+# ===================================================================
+# Sentinel FormID (0xFF) stability
+# ===================================================================
+
+
+class TestSentinelFormIDSurvivesMasterAddition:
+    """Local FormIDs use a 0xFF sentinel that gets resolved at save time.
+    Adding masters after write_form_id must not corrupt these references."""
+
+
+    def test_local_formid_survives_new_master(self, tmp_path):
+        """A local race referenced by an NPC survives save/reload even
+        after copy_record adds new masters to the patch."""
+
+        # Two source plugins
+        src_a = Plugin.new_plugin(tmp_path / 'SourceA.esp',
+                                  masters=['Skyrim.esm'])
+        src_a.new_record('RACE', 'RaceFromA')
+        src_a.save()
+
+        src_b = Plugin.new_plugin(tmp_path / 'SourceB.esp',
+                                  masters=['Skyrim.esm'])
+        src_b.new_record('FLST', 'ListFromB')
+        src_b.save()
+
+        # Create patch with only Skyrim.esm as master initially
+        patch = Plugin.new_plugin(tmp_path / 'Patch.esp',
+                                  masters=['Skyrim.esm'])
+
+        # Create a local race and reference it from an NPC
+        npc_race = patch.new_record('RACE', 'NPCRace')
+        npc = patch.new_record('NPC_', 'TestNPC', form_id=0x13746)
+        npc.add_subrecord('RNAM', npc_race.form_id)
+
+        masters_before = len(patch.header.masters)
+
+        # Copy a record from SourceB — adds SourceB.esp as a new master,
+        # shifting what the self-index will be at save time
+        loaded_b = Plugin.load(tmp_path / 'SourceB.esp')
+        flst_rec = next(loaded_b.get_records_by_signature('FLST'))
+        patch.copy_record(flst_rec)
+
+        assert len(patch.header.masters) > masters_before, \
+            "copy_record should have added a new master"
+
+        # Save and reload
+        patch.save()
+        reloaded = Plugin(tmp_path / 'Patch.esp')
+
+        npc_reloaded = next(reloaded.get_records_by_signature('NPC_'))
+        race_reloaded = next(reloaded.get_records_by_signature('RACE'))
+        assert race_reloaded.editor_id == 'NPCRace'
+
+        # RNAM must point to self (file_index == len(masters))
+        # and match the race record's object_index
+        num_masters = len(reloaded.header.masters)
+        assert npc_reloaded['RNAM'].file_index == num_masters, \
+            "RNAM file_index should reference self"
+        assert npc_reloaded['RNAM'].object_index == race_reloaded.form_id.object_index, \
+            "RNAM should reference the local race record"
+
+
+# ===================================================================
+# Tint Auto-Sort
+# ===================================================================
+
+
+class TestStructNPCTintAutoSort:
+    """Tint layers stay interleaved after auto-sort on modified records."""
+
+
+    def test_tints_interleaved_after_sort(self, tmp_path):
+        """Modified NPC record preserves TINI/TINC/TINV/TIAS grouping."""
+        from esplib.defs.tes5 import ACBS
+
+        patch = Plugin.new_plugin(tmp_path / 'Patch.esp',
+                                  masters=['Skyrim.esm'])
+
+        npc = patch.new_record('NPC_', 'TestNPC')
+        npc['ACBS'] = {'flags': ACBS.Female | ACBS.Essential}
+
+        npc.add_tint_layer(
+            tini=643,
+            tinc=[108, 99, 85, 0],
+            tinv=89,
+            tias=9336,
+        )
+        npc.add_tint_layer(
+            tini=644,
+            tinc=[25, 25, 25, 0],
+            tinv=100,
+            tias=9347,
+        )
+
+        flat = npc._flatten_children()
+        tint_sigs = [sr.signature for sr in flat
+                     if sr.signature in ('TINI', 'TINC', 'TINV', 'TIAS')]
+        expected = ['TINI', 'TINC', 'TINV', 'TIAS',
+                    'TINI', 'TINC', 'TINV', 'TIAS']
+        assert tint_sigs == expected, \
+            f"Tints should be interleaved, got {tint_sigs}"
+
+
+    def test_tints_after_add_and_remove(self, tmp_path):
+        """Adding/removing tint layers preserves interleaved order."""
+        from esplib.defs.tes5 import ACBS
+
+        patch = Plugin.new_plugin(tmp_path / 'Patch.esp',
+                                  masters=['Skyrim.esm'])
+
+        npc = patch.new_record('NPC_', 'TestNPC')
+        npc['ACBS'] = {'flags': ACBS.Female}
+        npc.add_subrecord('FULL', 'Test')
+
+        npc.add_tint_layer(tini=1, tinc=[255, 0, 0, 0], tinv=50, tias=100)
+
+        # Remove all tints and reset hierarchy
+        npc.remove_subrecords('TINI')
+        npc.remove_subrecords('TINC')
+        npc.remove_subrecords('TINV')
+        npc.remove_subrecords('TIAS')
+        npc.children = None
+
+        # Re-add two layers
+        npc.add_tint_layer(tini=10, tinc=[0, 255, 0, 0], tinv=75, tias=200)
+        npc.add_tint_layer(tini=20, tinc=[0, 0, 255, 0], tinv=90, tias=300)
+
+        flat = npc._flatten_children()
+        tint_sigs = [sr.signature for sr in flat
+                     if sr.signature in ('TINI', 'TINC', 'TINV', 'TIAS')]
+        expected = ['TINI', 'TINC', 'TINV', 'TIAS',
+                    'TINI', 'TINC', 'TINV', 'TIAS']
+        assert tint_sigs == expected
+
+        all_sigs = [sr.signature for sr in flat]
+        full_idx = all_sigs.index('FULL')
+        tini_idx = all_sigs.index('TINI')
+        assert full_idx < tini_idx, "FULL should come before tints"
+
+
+# ===================================================================
+# Concurrency
+# ===================================================================
+
+
+class TestConcurrentMutationAndSave:
+    """The Plugin's RLock should keep concurrent add_record + save
+    from producing a file whose HEDR.num_records doesn't match the
+    record count CK reads back. This was the crash mode behind
+    YASNPCPatch_2025_05_04.esp: GUI preview-bake thread mutated the
+    same patch the run thread was saving."""
+
+
+    def test_save_snapshot_consistent_under_concurrent_add(self, tmp_path):
+        """Without the Plugin._lock, this reproduces the failure mode
+        CK reported on YASNPCPatch_2025_05_04.esp: a mutating thread
+        slips records into self.groups between save()'s
+        _count_records_and_groups() and the per-group serialization,
+        so HEDR.num_records ends up smaller than the actual record
+        count in the file.
+        """
+        import threading
+
+        plugin = Plugin.new_plugin(
+            tmp_path / "concurrent.esp",
+            masters=['Skyrim.esm'], game='tes5')
+
+        # Seed enough records that save() spends measurable time
+        # serializing groups (so the mutator has a real window).
+        for i in range(100):
+            rec = Record('GLOB', FormID(0))
+            rec.add_subrecord('EDID').set_string(f'Seed{i:04d}')
+            plugin.add_record(rec)
+
+        save_done = threading.Event()
+        mutate_count = [0]
+
+        def mutator():
+            i = 0
+            # Cap total iterations so the test can't run away if
+            # save() returns instantly on a slow machine.
+            while not save_done.is_set() and i < 5000:
+                rec = Record('NPC_', FormID(0))
+                rec.add_subrecord('EDID').set_string(f'Concurrent{i:06d}')
+                plugin.add_record(rec)
+                i += 1
+            mutate_count[0] = i
+
+        t = threading.Thread(target=mutator)
+        t.start()
+        try:
+            plugin.save()
+        finally:
+            save_done.set()
+            t.join()
+
+        # Re-load and check internal consistency. Header must match
+        # actual on-disk count exactly — the symptom CK flagged.
+        reloaded = Plugin.load(tmp_path / "concurrent.esp")
+        assert reloaded.header.num_records == \
+            reloaded._count_records_and_groups(), (
+                f"Header {reloaded.header.num_records} != "
+                f"actual {reloaded._count_records_and_groups()} "
+                f"(mutator added {mutate_count[0]} records during save)")
