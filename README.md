@@ -72,17 +72,29 @@ python -c "from authoring.papyrus_build import ensure_sources; print(ensure_sour
 - `add_quest_alias`, `add_quest_stage_script`, `search_quests`, `quest_console_commands`
 
 ### Records, items and world
-- `create_record`, `clone_record`, `clone_records`, `edit_record`
-- `place_item`, `create_cell`, `make_reference_persistent`
+- `create_record`, `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
+  `{"sig": "ENCH", "field": "cost", "value": 250}`), `copy_subrecords`, `drop_conditions`, `remove_records`
+- `diff_records` (field-aware comparison of two records) and `get_record(full=...)` with decoded `fields`
+- `place_item`, `place_items` (several items on free floor spots), `find_free_spots`, `create_cell`,
+  `make_reference_persistent`; `get_cell_contents` takes `x`, `y`, `radius` to list the nearest objects
 - Books: `edit_book` (text and in-world model)
+- `create_shader`, `create_unique_item` (clone an item with its own name, enchantment and full charge),
+  `item_console_commands` (`player.additem` / `player.moveto` lines for a plugin's items)
+
+### Magic: enchantments, spells and scripts
+- `create_enchantment`, `enchant_item`, `create_script_effect` (Papyrus-driven effect with a `delivery` of
+  touch, aimed, ray or self; touch is a short-range ray), `create_script`
+- `create_spell`, `create_spell_tome`, `create_scroll`
+- `create_spell_set`: one script backing a whole spell family (spells, tomes, scroll, staff) placed in a cell
 
 ### Text, conditions and scripts
 - `edit_text`, `edit_texts`, `lint_text`, `edit_condition`, `edit_script`
 
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
-- `validate_plugin`, `audit_plugin`
-- `install_plugin` (copy to Data, with dry run) and `package_plugin` (zip)
+- `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`
+- `install_plugin` (copy to Data, with dry run), `deploy_plugin` (can remove stale loose copies) and
+  `package_plugin` (zip)
 
 `get_weather` is a placeholder tool.
 
