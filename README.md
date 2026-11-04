@@ -118,6 +118,12 @@ python -m pytest -m compiler
 
 Without `Skyrim.esm` in the Data folder, `game` tests are skipped automatically.
 
+The slow plugin-writing tests are split by area so you can run only what you changed:
+`tests/test_npc_tools.py`, `test_record_tools.py`, `test_quest_tools.py`, `test_package_tools.py`,
+`test_enchant_tools.py` (enchantments, script effects, items) and `test_spell_set_tools.py`. Shared fixtures
+live in `tests/conftest.py` and shared helpers in `tests/helpers.py`. The CI matrix groups the files the same
+way (core, spells, authoring); add new test files to a group in the workflow.
+
 ## License
 
 Licensed under the [Mozilla Public License 2.0](LICENSE). The bundled [esplib/](esplib) is a modified

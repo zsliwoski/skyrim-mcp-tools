@@ -11,9 +11,13 @@ def _plugins(model):
     """Plugins of the model, loaded once per path with only the signatures this search needs."""
     out = []
     for pl in model.plugins:
-        key = str(pl.file_path)
+        path = pl.file_path
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
         if key not in _cache:
-            _cache[key] = Plugin.load_cached(key, only_signatures={'CELL', 'WRLD', 'REFR', 'ACHR'})
+            for old in [k for k in _cache if k[0] == key[0]]:
+                del _cache[old]
+            _cache[key] = Plugin.load_cached(str(path), only_signatures={'CELL', 'WRLD', 'REFR', 'ACHR'})
         out.append(_cache[key])
     return out
 

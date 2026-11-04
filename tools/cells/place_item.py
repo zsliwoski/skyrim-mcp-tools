@@ -13,9 +13,21 @@ PLACEABLE = ['WEAP', 'ARMO', 'ALCH', 'BOOK', 'MISC', 'AMMO', 'INGR', 'KEYM', 'SC
              'STAT', 'MSTT', 'ACTI', 'CONT', 'FURN', 'DOOR', 'FLOR', 'TREE', 'LVLI']
 
 
+def base_charge(rec):
+    """Full charge (EAMT) of an enchanted weapon base record, else None."""
+    if rec is None or rec.get_subrecord('EITM') is None:
+        return None
+    eamt = rec.get_subrecord('EAMT')
+    return struct.unpack_from('<H', bytes(eamt.data))[0] if eamt is not None and len(eamt.data) >= 2 else None
+
+
 def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=None, persistent=False,
-               editor_id=None):
-    """Add a REFR for `base` to `cell` inside target_plugin (the file must already exist)."""
+               editor_id=None, rotation_x=0.0, rotation_y=0.0, charge=None):
+    """Add a REFR for `base` to `cell` inside target_plugin (the file must already exist).
+
+    An enchanted weapon placed without XCHG spawns with no charge, so charge defaults to the weapon's full
+    charge (its EAMT); pass a number to override. rotation_x/y (degrees) tilt the item, e.g. 90 lays a dagger flat.
+    """
     path = resolve_target_path(target_plugin, b.output_dir, b.data_dir)
     target = Target(b.m, b.names, path, create=False)
     plugin = target.plugin
@@ -24,8 +36,13 @@ def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=
     if own is not None:
         own_id = own.form_id.value & 0xFFFFFF
         fid = 0
+        base_rec = own
     else:
-        fid, _ = b.resolver.lookup(base, PLACEABLE)
+        fid, base_rec = b.resolver.lookup(base, PLACEABLE)
+    if charge is None:
+        charge = base_charge(base_rec)
+    elif charge < 0:
+        raise ValueError("charge cannot be negative")
     if scale is not None and not 0.1 <= scale <= 10:
         raise ValueError("scale must be between 0.1 and 10")
 
@@ -44,12 +61,17 @@ def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=
     if editor_id:
         ref.add_subrecord('EDID', z(editor_id))
     ref.add_subrecord('NAME', fid_bytes(base_local))
+    if charge is not None:
+        ref.add_subrecord('XCHG', struct.pack('<f', float(charge)))
     if scale is not None:
         ref.add_subrecord('XSCL', struct.pack('<f', scale))
-    ref.add_subrecord('DATA', struct.pack('<6f', x, y, z_pos, 0.0, 0.0, math.radians(rotation_z)))
+    ref.add_subrecord('DATA', struct.pack('<6f', x, y, z_pos, math.radians(rotation_x), math.radians(rotation_y),
+                                          math.radians(rotation_z)))
     made = []
     b.place_ref(plugin, p.cell, ref, persistent, made)
     plugin.header.next_object_id = new_id + 1
     target.save()
     return {'path': str(path), 'placed': made[-1], 'base': base, 'cell': cell,
-            'position': {'x': x, 'y': y, 'z': z_pos, 'rotation_z': rotation_z}, 'records': made}
+            'position': {'x': x, 'y': y, 'z': z_pos, 'rotation_x': rotation_x, 'rotation_y': rotation_y,
+                         'rotation_z': rotation_z},
+            'charge': charge, 'records': made}

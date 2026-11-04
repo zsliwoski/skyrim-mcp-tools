@@ -29,6 +29,16 @@ def sandbox(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def npc_plugin(sandbox):
+    res = server.create_npc({
+        "plugin_name": "TestMod.esp", "editor_id": "TestSven", "name": "Test Sven", "clone_from": "Sven",
+        "dialogue": [{"kind": "topic", "prompt": "Hello there", "lines": ["Hi."]}],
+    })
+    assert "error" not in res, res
+    return sandbox / "TestMod.esp"
+
+
 @pytest.fixture(scope="session")
 def compiler_available():
     from tools.papyrus.papyrus_build import CK_DIR

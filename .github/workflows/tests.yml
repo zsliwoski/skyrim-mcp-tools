@@ -7,6 +7,17 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - name: core
+            paths: tests/test_unit.py tests/test_books.py tests/test_edit_tools.py tests/test_maintenance.py tests/test_radiant.py tests/test_radiant_story.py
+          - name: spells
+            paths: tests/test_enchant.py tests/test_spell.py tests/test_spell_set.py
+          - name: authoring
+            paths: tests/test_npc_tools.py tests/test_record_tools.py tests/test_quest_tools.py tests/test_package_tools.py tests/test_enchant_tools.py tests/test_spell_set_tools.py tests/test_read_tools.py
+    name: test (${{ matrix.group.name }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,4 +26,8 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       # Tests marked game or compiler need a Skyrim install and the Creation Kit, so CI leaves them out.
-      - run: python -m pytest -m "not game and not compiler"
+      # The authoring group is made of such tests only; pytest exits 5 when nothing is left to run.
+      - run: |
+          python -m pytest ${{ matrix.group.paths }} -m "not game and not compiler"
+          if ($LASTEXITCODE -eq 5) { exit 0 }
+          exit $LASTEXITCODE

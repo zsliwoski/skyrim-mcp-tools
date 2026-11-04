@@ -17,6 +17,9 @@ WRITE_TOOLS = {
     'clone_record', 'clone_records', 'create_cell', 'make_reference_persistent', 'snapshot_plugin',
     'restore_snapshot', 'install_plugin', 'edit_text', 'edit_condition', 'edit_script', 'edit_npc_face',
     'paint_npc_face', 'edit_record', 'package_plugin', 'place_item', 'edit_texts', 'edit_book',
+    'create_enchantment', 'create_script_effect', 'enchant_item', 'create_spell', 'create_script',
+    'create_shader', 'create_unique_item', 'deploy_plugin', 'copy_subrecords', 'remove_records',
+    'drop_conditions', 'create_scroll', 'create_spell_tome', 'place_items', 'create_spell_set',
 }
 _write_lock = threading.RLock()
 _register_tool = mcp.tool
@@ -246,14 +249,21 @@ def _draft(draft_id):
 
 
 @mcp.tool()
-def search_forms(signature: str, query: str = "", limit: int = 25, plugins: list[str] | None = None) -> list[dict]:
+def search_forms(signature: str, query: str = "", limit: int = 25,
+                 plugins: list[str] | None = None) -> list[dict] | dict:
     """Find records to reference when building an NPC.
 
     signature: a record type such as RACE, VTYP (voice type), CLAS, FACT, SPEL, PERK, KYWD, PACK,
-    OTFT (outfit), ARMO, WEAP, LVLI, CSTY, NPC_, or QUST. query: substring of the editor ID or name
+    OTFT (outfit), ARMO, WEAP, LVLI, CSTY, NPC_, QUST, MGEF, ENCH or EFSH (shader). An unsupported type returns
+    an error listing the supported ones. query: substring of the editor ID or name
     (empty lists the first records). Identifiers returned here can be used in NPC draft fields.
     """
-    return npc_builder(plugins).resolver.search([signature.upper()], query, limit)
+    from tools.core.quest_model import LOAD_SIGS
+    builder = npc_builder(plugins)
+    sig = signature.upper()
+    if sig not in LOAD_SIGS:
+        return {"error": f"{signature!r} records are not loaded; supported: {', '.join(sorted(LOAD_SIGS))}"}
+    return builder.resolver.search([sig], query, limit)
 
 
 @mcp.tool()
@@ -577,6 +587,245 @@ def _out_path(plugin):
 
 
 @mcp.tool()
+def create_spell(target_plugin: str, editor_id: str, name: str, effects: list[dict], kind: str = "ability",
+                 delivery: str | None = None, cost: int = 0, cast_duration: float = 0.0, range: float = 0.0,
+                 description: str = "", cast: str | None = None,
+                 plugins: list[str] | None = None) -> dict:
+    """Create a spell (SPEL) from existing magic effects.
+
+    effects: [{"effect": MGEF editor ID/name/form ID, "magnitude": 0, "area": 0, "duration": 0}].
+    kind: "ability" (permanent self effect, add with Actor.AddSpell; effects must be constant-self MGEFs such as
+    EnchFortify<School>ConstantSelf), "spell", "power" or "lesser_power". delivery (non-abilities): self, touch,
+    aimed, target_actor, target_location. cast: fire_and_forget (default), concentration or constant; the MGEF's
+    own cast type and delivery must match. cost 0 = auto-calculated. See the skyrim-enchantments skill.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_spell")
+        from tools.records.spell import create_spell as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, effects, kind,
+                  delivery, cost, cast_duration, range, description, cast)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_script(target_plugin: str, script_name: str, source: str, plugins: list[str] | None = None) -> dict:
+    """Compile a Papyrus script into the Scripts folder beside target_plugin; the .psc is kept in Scripts/Source.
+
+    source must start with `Scriptname <script_name> ...`. A compile error returns the compiler output. The
+    script is not attached to any record; install_plugin ships it once a VMAD names it. For an enchantment
+    effect script use create_script_effect.
+    """
+    try:
+        from tools.records.spell import create_script as run
+        return run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, script_name, source)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_script_effect(target_plugin: str, editor_id: str, name: str, script_name: str, source: str,
+                         description: str = "", kind: str = "armor", enchantment_editor_id: str | None = None,
+                         cost: int = 0, extra_effects: list[dict] | None = None, duration: int | None = None,
+                         base_effect: str | None = None, drop_conditions: list[int] | None = None,
+                         delivery: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Create a magic effect driven by a Papyrus script, and an enchantment that uses it, in one call.
+
+    source: the full script, starting `Scriptname <script_name> Extends ActiveMagicEffect`; it is compiled
+    first (a compile error changes nothing). Typical events: OnEffectStart(Actor akTarget, Actor akCaster),
+    OnUpdate (RegisterForSingleUpdate), OnEffectFinish; undo any state there, because armor effects stop
+    when the item is removed. kind: "armor" (constant, self), "weapon" (on hit) or "staff". The ENCH is named
+    <editor_id>Ench unless enchantment_editor_id is given ("" skips it). extra_effects adds vanilla effects to
+    the same enchantment, e.g. [{"effect": "EnchParalysisFFContact", "duration": 600}]. duration is the script
+    effect's own (default 1 for weapons, 0 for armor). Apply it with enchant_item.
+    base_effect: a vanilla MGEF to imitate (e.g. "EnchParalysisFFContact"); the new effect copies its data,
+    keywords and conditions so weapons keep their charge bar and recharge option. drop_conditions: condition
+    indexes of that copy to remove (see diff_records/list_conditions; vanilla paralysis has a 25% chance one).
+    description is shown in the effect's tooltip. See the skyrim-enchantments skill.
+    delivery: "touch" (a short-range ray: the script gets a distance check, as touch spells do not work with
+    script effects), "aimed", "ray" (concentration beam) or "self": makes an effect for a spell, scroll or
+    staff by copying the matching vanilla spell effect (no ENCH unless enchantment_editor_id is given).
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_script_effect")
+        from tools.records.enchant import create_script_effect as run
+        def rebuild():
+            with _lock:
+                _models.clear()
+            return npc_builder(_with_target(plugins, target_plugin))
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, script_name,
+                  source, description, kind, enchantment_editor_id, cost, rebuild, extra_effects, duration,
+                  base_effect, drop_conditions, delivery)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def enchant_item(item: str, target_plugin: str, enchantment: str, charge: int | None = None,
+                 replace: bool = False, plugins: list[str] | None = None) -> dict:
+    """Attach an enchantment (ENCH) to a weapon or armor/jewelry in target_plugin.
+
+    Writes EITM (and EAMT charge for weapons, default 500; worn items are constant so charge is refused).
+    Refuses an already enchanted item unless replace is true. The item may be vanilla (an override is
+    added) or already in target_plugin.
+    """
+    try:
+        from tools.records.enchant import enchant_item as run
+        res = run(_editor(_with_target(plugins, target_plugin)), item, target_plugin, enchantment, charge, replace)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+def _refresher(plugins, target_plugin):
+    """Callable returning a fresh (builder, editor) that sees everything written so far."""
+    def refresh():
+        with _lock:
+            _models.clear()
+        loaded = _with_target(plugins, target_plugin)
+        return npc_builder(loaded), _editor(loaded)
+    return refresh
+
+
+@mcp.tool()
+def create_scroll(target_plugin: str, editor_id: str, name: str, effects: list[dict], delivery: str = "aimed",
+                  description: str = "", cost: int = 0, plugins: list[str] | None = None) -> dict:
+    """Create a scroll (SCRL) that casts the given effects once, modelled on a vanilla scroll.
+
+    effects: [{"effect": MGEF, "magnitude": 0, "area": 0, "duration": 0}]; the MGEFs' own delivery must
+    match delivery (self, touch, aimed, target_actor, target_location). Place it with place_item or
+    add it with player.additem (item_console_commands).
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_scroll")
+        from tools.records.magic_items import create_scroll as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, effects,
+                  delivery, description, cost)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_spell_tome(target_plugin: str, editor_id: str, name: str, spell: str, text: str = "",
+                      value: int | None = None, plugins: list[str] | None = None) -> dict:
+    """Create a spell tome (BOOK) that teaches `spell`, a SPEL already in target_plugin, when read.
+
+    text is the book body (see the skyrim-book-writing skill). value defaults to the vanilla tome's price.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_tome")
+        from tools.records.magic_items import create_spell_tome as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, spell,
+                  text, value)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_shader(target_plugin: str, editor_id: str, color: str, source: str = "MagicArmorEbonyFleshFXS",
+                  plugins: list[str] | None = None) -> dict:
+    """Create an effect shader (EFSH) by cloning a vanilla one and recolouring it, e.g. a gold skin tint.
+
+    color: '#RRGGBB'. source: the vanilla shader to copy (default Ebony Flesh; find others with
+    search_forms("EFSH", ...)). Play it from a script with
+    `(Game.GetFormFromFile(0x000B2C, "Plugin.esp") as EffectShader).Play(akTarget)` (local ID, no load-order
+    byte). The colour bytes are a best guess, so check the look in game.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_shader")
+        from tools.records.items import create_shader as run
+        res = run(_refresher(plugins, target_plugin), target_plugin, editor_id, color, source)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_unique_item(source: str, target_plugin: str, editor_id: str, name: str,
+                       description: str | None = None, enchantment: str | None = None,
+                       charge: int | None = None, replace_enchantment: bool = False, cell: str | None = None,
+                       x: float = 0.0, y: float = 0.0, z: float = 0.0, rotation_x: float = 0.0,
+                       rotation_y: float = 0.0, rotation_z: float = 0.0, persistent: bool = False,
+                       ref_editor_id: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Make a custom item in one call: clone a vanilla item, rename it, enchant it and place it in a cell.
+
+    source: the vanilla WEAP/ARMO/MISC/BOOK to clone. enchantment (an ENCH editor ID, from create_enchantment
+    or create_script_effect) is optional; weapons get `charge` (default 500) and spawn with full charge.
+    Give cell and x/y/z to place it in the world (rotation_x 90 lays a dagger flat); omit cell to only create it.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_unique_item")
+        from tools.records.items import create_unique_item as run
+        res = run(_refresher(plugins, target_plugin), source, target_plugin, editor_id, name, description,
+                  enchantment, charge, replace_enchantment, cell, x, y, z, rotation_x, rotation_y, rotation_z,
+                  persistent, ref_editor_id)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def deploy_plugin(plugin: str, mode: str = "package", remove_loose: bool = False) -> dict:
+    """Validate a plugin, then ship it: a Vortex zip (mode "package") or loose files in Data (mode "install").
+
+    Validation errors stop the deploy. When packaging, loose copies already in the Data folder are listed
+    (they override Vortex's files); remove_loose deletes them so the Vortex install is what runs.
+    """
+    from tools.records.maintenance import deploy_plugin as run
+    try:
+        return run(_out_path(plugin), DATA_DIR, mode, remove_loose)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def item_console_commands(plugin: str) -> dict:
+    """In-game console commands to try a plugin's own items, spells, cells and NPCs (additem, addspell, coc...).
+
+    Form IDs use XX for the load-order index; run `help <EditorID> 0` in the console to see the real prefix.
+    """
+    from tools.records.maintenance import item_console_commands as run
+    try:
+        return run(_out_path(plugin))
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_enchantment(target_plugin: str, editor_id: str, name: str, effects: list[dict],
+                       kind: str = "weapon", cost: int = 0, auto_calc: bool = True,
+                       plugins: list[str] | None = None) -> dict:
+    """Create a custom enchantment (ENCH) from existing magic effects (MGEF).
+
+    effects: [{"effect": MGEF editor ID/name/form ID, "magnitude": 0, "area": 0, "duration": 0}].
+    kind: "weapon" (fire-and-forget on hit, touch), "armor" (constant effect, self; duration must be 0) or
+    "staff". Find effects with search_forms("MGEF", ...). Weapon effects must be touch/fire-and-forget MGEFs
+    and armor effects constant/self ones. Then apply it with edit_record: EITM (the ENCH) on the WEAP/ARMO,
+    plus EAMT (u16 charge) on weapons. A fully new effect needs a cloned MGEF (clone_record + edit_record),
+    optionally with a Papyrus script. See the skyrim-enchantments skill.
+    """
+    try:
+        from tools.records.enchant import create_enchantment as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, effects,
+                  kind, cost, auto_calc=auto_calc)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def clone_record(source: str, target_plugin: str, editor_id: str, name: str | None = None,
                  description: str | None = None, signature: str | None = None,
                  plugins: list[str] | None = None) -> dict:
@@ -625,18 +874,20 @@ def clone_records(target_plugin: str, items: list[dict], plugins: list[str] | No
 @mcp.tool()
 def place_item(base: str, target_plugin: str, cell: str, x: float, y: float, z: float,
                rotation_z: float = 0.0, scale: float | None = None, persistent: bool = False,
-               editor_id: str | None = None, plugins: list[str] | None = None) -> dict:
+               editor_id: str | None = None, rotation_x: float = 0.0, rotation_y: float = 0.0,
+               charge: float | None = None, plugins: list[str] | None = None) -> dict:
     """Place one reference to any base object (book, armor, misc item, static...) in an existing cell.
 
     base: editor ID, name or form ID, including records already in target_plugin. cell: editor ID or name
-    (see search_cells). x, y, z in game units, rotation_z in degrees. Use get_cell_contents for the cell's
-    furniture and shelf positions, or search_references to copy coordinates from a nearby object.
-    Set persistent for items a script or quest must reach. The file is backed up to .bak.
+    (see search_cells). x, y, z in game units, rotation_x/y/z in degrees (rotation_x 90 lays a dagger flat).
+    Use get_cell_contents for the cell's furniture and shelf positions, or search_references to copy
+    coordinates from a nearby object. An enchanted weapon is placed with full charge (its EAMT); pass charge
+    to override. Set persistent for items a script or quest must reach. The file is backed up to .bak.
     """
     try:
         from tools.cells.place_item import place_item as run
         res = run(npc_builder(_with_target(plugins, target_plugin)), base, target_plugin, cell, x, y, z,
-                  rotation_z, scale, persistent, editor_id)
+                  rotation_z, scale, persistent, editor_id, rotation_x, rotation_y, charge)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError, KeyError) as e:
@@ -645,19 +896,87 @@ def place_item(base: str, target_plugin: str, cell: str, x: float, y: float, z: 
 
 @mcp.tool()
 def get_cell_contents(cell: str, query: str | None = None, signature: str | None = None, limit: int = 100,
+                      x: float | None = None, y: float | None = None, radius: float | None = None,
                       plugins: list[str] | None = None) -> dict:
     """List what is placed in a cell: each reference's base (type, editor ID, name) and position.
 
     cell: editor ID or name. query filters by base editor ID or name; signature by base type (STAT, FURN,
-    CONT, BOOK...). Use it to find shelves, tables and floor spots before place_item.
+    CONT, BOOK...). x, y and radius keep only references within that horizontal distance, nearest first.
+    Use it to find shelves, tables and floor spots before place_item (or use find_free_spots).
     Pass `plugins` with Skyrim.esm and the plugin being authored (e.g. ["Skyrim.esm", "My.esp"]) so its
     references and base records are included.
     """
     try:
         from tools.cells.cell_contents import get_cell_contents as run
-        return run(npc_builder(plugins), cell, query, signature, limit)
+        return run(npc_builder(plugins), cell, query, signature, limit, x, y, radius)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
+
+
+@mcp.tool()
+def find_free_spots(cell: str, x: float, y: float, z: float, count: int = 1, spacing: float = 30.0,
+                    clearance: float = 25.0, radius: float = 300.0, height: float = 120.0,
+                    plugins: list[str] | None = None) -> dict:
+    """Find free floor points near (x, y, z) in a cell, nearest first, on a grid of `spacing` units.
+
+    A point is free when no reference within `height` of z lies closer than `clearance` (lights are ignored).
+    Pass plugins with Skyrim.esm and the plugin being authored so its own references count. Feed the points to
+    place_item, or use place_items to do both.
+    """
+    try:
+        from tools.cells.cell_contents import find_free_spots as run
+        return run(npc_builder(plugins), cell, x, y, z, count, spacing, clearance, radius, height)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def place_items(bases: list[str], target_plugin: str, cell: str, x: float, y: float, z: float,
+                spacing: float = 30.0, clearance: float = 25.0, radius: float = 300.0,
+                rotation_z: float = 0.0, plugins: list[str] | None = None) -> dict:
+    """Place several items (books, scrolls, weapons, misc...) on free floor spots nearest (x, y, z) in a cell.
+
+    bases: editor IDs of items in target_plugin or vanilla ones. Each reference is named <base>Ref. Existing
+    objects (including ones in target_plugin) are avoided; the call fails if the radius holds too few spots.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_place_items")
+        from tools.cells.place_items import place_items as run
+        return run(_refresher(plugins, target_plugin), bases, target_plugin, cell, x, y, z, spacing, clearance,
+                   radius, rotation_z)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+@mcp.tool()
+def create_spell_set(target_plugin: str, prefix: str, name: str, script_name: str, source: str,
+                     description: str = "", variants: list[str] | None = None, duration: int = 10,
+                     magnitude: float = 0, costs: dict | None = None, tome_texts: dict | None = None,
+                     tomes: bool = True, scroll: bool = True, staff: bool = True,
+                     staff_source: str = "StaffParalyze", staff_charge: int = 3000, cell: str | None = None,
+                     x: float = 0.0, y: float = 0.0, z: float = 0.0, spacing: float = 30.0,
+                     clearance: float = 25.0, radius: float = 300.0, plugins: list[str] | None = None) -> dict:
+    """Build a spell family from one Papyrus effect script in a single call.
+
+    Creates a script effect per delivery, a spell per variant (touch is a short-range ray; bolt, ray, burst, nova; default all),
+    a spell tome per spell, a scroll and an enchanted staff, and, if cell is given, places the tomes, scroll
+    and staff on free floor spots nearest x, y, z. source is the full ActiveMagicEffect script. costs maps a
+    variant to its mana cost ({"ray": 40}); tome_texts maps a variant to the book body. Editor IDs derive from
+    prefix: <prefix>TouchSpell, <prefix>TouchTome, <prefix>Scroll, <prefix>Staff... A snapshot is taken first.
+    Concentration (ray) and self-area (nova) behaviour should be checked in game. See the skyrim-enchantments skill.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_spell_set")
+        from tools.records.spell_set import create_spell_set as run
+        return run(_refresher(plugins, target_plugin), target_plugin, prefix, name, script_name, source,
+                   description, variants, duration, magnitude, costs, tome_texts, tomes, scroll, staff,
+                   staff_source, staff_charge, cell, x, y, z, spacing, clearance, radius)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
 
 
 @mcp.tool()
@@ -1032,16 +1351,73 @@ def _invalidate():
         _models.clear()
 
 
+def _read_path(plugin):
+    """Path of a plugin to read (output folder, then Data folder), official plugins included."""
+    path = Path(_plugin_path(plugin))
+    if not path.is_file():
+        raise FileNotFoundError(f"{plugin} not found in the output or Data folder")
+    return path
+
+
 @mcp.tool()
-def get_record(identifier: str, plugin: str | None = None, signature: str | None = None,
+def diff_records(plugin_a: str, record_a: str, plugin_b: str, record_b: str) -> dict:
+    """Compare two records field by field, e.g. a custom magic effect against the vanilla one it imitates.
+
+    Plugins are file names (output folder, then Data folder). Records are editor IDs or hex object IDs.
+    Reports subrecords on only one side, flag differences and, for same-size data blobs, the differing
+    4-byte words (MGEF DATA words are named, e.g. 'flags', 'base cost', 'archetype'); conditions are decoded
+    with function names. Use it first when a custom item behaves unlike a vanilla one.
+    """
+    from tools.records.record_tools import diff_records as run
+    return _guarded(lambda: run(_read_path(plugin_a), record_a, _read_path(plugin_b), record_b))
+
+
+@mcp.tool()
+def copy_subrecords(target_plugin: str, record: str, source_record: str, sigs: list[str] | None = None,
+                    skip: list[str] | None = None, keep: list[str] | None = None,
+                    source_plugin: str = "Skyrim.esm") -> dict:
+    """Replace subrecords of one of your records with those of a vanilla record of the same type.
+
+    Use it to make a custom record behave like a vanilla one (e.g. give a script MGEF the data, keywords,
+    sounds and conditions of EnchParalysisFFContact). sigs: only these signatures (default: all except EDID
+    and keep). keep: signatures of your record to leave alone (default EDID, VMAD, FULL). skip: never copy
+    these. source_plugin must be the target's first master (Skyrim.esm). A snapshot is taken first.
+    """
+    from tools.records.record_tools import copy_subrecords as run
+    return _guarded(lambda: run(_out_path(target_plugin), record, _read_path(source_plugin), source_record,
+                                sigs, skip or (), keep or ("EDID", "VMAD", "FULL")),
+                    "pre_copy_subrecords", target_plugin)
+
+
+@mcp.tool()
+def drop_conditions(plugin: str, record: str, indexes: list[int]) -> dict:
+    """Remove conditions (CTDA) from your record by index (see list_conditions), e.g. the 25% random-chance
+    condition vanilla paralysis carries. Returns the conditions removed. A snapshot is taken first."""
+    from tools.records.record_tools import drop_conditions as run
+    return _guarded(lambda: run(_out_path(plugin), record, indexes), "pre_drop_conditions", plugin)
+
+
+@mcp.tool()
+def remove_records(plugin: str, records: list[str]) -> dict:
+    """Delete your own records (editor IDs or hex IDs) and every placed reference to them, e.g. diagnostic
+    test items. Reports other records that still point at them. A snapshot is taken first."""
+    from tools.records.record_tools import remove_records as run
+    return _guarded(lambda: run(_out_path(plugin), records), "pre_remove_records", plugin)
+
+
+@mcp.tool()
+def get_record(identifier: str, plugin: str | None = None, signature: str | None = None, full: bool = False,
                plugins: list[str] | None = None) -> dict:
     """Show a record's raw subrecords (hex plus light decoding) to plan an edit_record call.
 
     identifier: editor ID, name, form ID or 'plugin.esp:hexid'. With `plugin` set, reads the record
-    from that plugin file (output folder or Data folder) instead of the loaded winner.
+    from that plugin file (output folder or Data folder) instead of the loaded winner. full returns the
+    whole hex of long subrecords instead of the first 96 bytes. Magic effects, spells, scrolls, enchantments,
+    books, weapon charge (EAMT) and placed-charge (XCHG) also get a `fields` dict with named values
+    (cast_type, delivery, cost...), which edit_record accepts as {field, value}.
     """
     try:
-        return _editor(plugins).get_record(identifier, plugin, signature)
+        return _editor(plugins).get_record(identifier, plugin, signature, full)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 
@@ -1063,6 +1439,10 @@ def edit_record(identifier: str, target_plugin: str, edits: list[dict] | None = 
       form ID; optional form_type limits the record signature). offset patches bytes inside the
       subrecord (e.g. ACBS level at offset 8 as uint16); append adds another subrecord of that sig.
     remove: list of 'SIG' or {sig, index}. Use get_record first to see the subrecords.
+    Named fields: {field, value} edits a decoded field of MGEF (cast_type, delivery, base_cost, flags...),
+      SPEL/SCRL (cost, cast_type, delivery, charge_time...), ENCH (cost, amount, cast_type, delivery),
+      BOOK (value, weight), WEAP (charge) or REFR (charge); value is a number or a name such as
+      'concentration' or 'touch'. get_record lists them under `fields`.
     """
     try:
         res = _editor(_with_target(plugins, target_plugin)).edit_record(identifier, target_plugin, edits, remove,

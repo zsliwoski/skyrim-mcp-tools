@@ -7,6 +7,7 @@ import esplib.defs.tes5  # noqa: F401
 from esplib import Plugin
 from esplib.record import GroupRecord
 from esplib.utils import FormID
+from esplib.vmad import VmadData
 
 OFFICIAL = {'skyrim.esm', 'update.esm', 'dawnguard.esm', 'hearthfires.esm', 'dragonborn.esm', 'skyrim.esl'}
 # Records that live inside nested groups (cells, topics); overriding them needs the group chain.
@@ -16,7 +17,7 @@ REF_SIGS = {'NAME', 'XOWN', 'XLCN', 'XTNM', 'XEZN', 'XMRK'}
 LOCALIZED_SIGS = {'FULL', 'SHRT', 'DESC', 'NNAM', 'ITXT', 'NAM1'}
 INT_KINDS = {'uint8': 'B', 'int8': 'b', 'uint16': 'H', 'int16': 'h', 'uint32': 'I', 'int32': 'i', 'float': 'f'}
 VALUE_KINDS = set(INT_KINDS) | {'string', 'form', 'hex'}
-EDIT_KEYS = {'sig', 'index', 'offset', 'append'} | VALUE_KINDS | {'form_type'}
+EDIT_KEYS = {'sig', 'index', 'offset', 'append', 'field', 'value'} | VALUE_KINDS | {'form_type'}
 
 
 class EditError(ValueError):
@@ -42,6 +43,37 @@ def resolve_target_path(name, output_dir, data_dir, must_exist=False):
     return cand
 
 
+def vmad_script_names(plugin):
+    """Names of every Papyrus script a plugin's records attach (scripts, fragment scripts, alias scripts)."""
+    names = set()
+
+    def walk(items):
+        for it in items:
+            if isinstance(it, GroupRecord):
+                yield from walk(it.records)
+            else:
+                yield it
+
+    for r in walk(plugin.records):
+        v = r.get_subrecord('VMAD')
+        if v is None:
+            continue
+        data = bytes(v.data)
+        try:
+            vm = VmadData.parse(data, r.signature)
+            names.update(s.name for s in vm.scripts)
+            for a in vm.alias_scripts:
+                names.update(s.name for s in a.scripts)
+            fd = vm.fragment_data
+            if fd is not None:
+                names.add(fd.filename)
+                names.update(f.script_name for f in fd.fragments)
+        except Exception:
+            names.update(n.decode() for n in re.findall(rb'[A-Za-z][A-Za-z0-9_]{3,}', data))
+    names.discard('')
+    return names
+
+
 def plugin_files(path, regen_seq=True):
     """The plugin plus every loose file it needs (FaceGen, scripts, regenerated SEQ), as absolute paths."""
     path = Path(path)
@@ -54,12 +86,17 @@ def plugin_files(path, regen_seq=True):
                       if f.is_file() and f.suffix.lower() != '.bak'
                       and path.name.lower() in (p.lower() for p in f.relative_to(base).parts)]
     stem = re.sub(r'[^A-Za-z0-9]', '', path.stem)[:16]
-    for f in (base / 'Scripts').glob(f"TIF__{stem}_*.pex"):
-        files.append(f)
-    for f in (base / 'Scripts').glob(f"QF__{stem}_*.pex"):
-        files.append(f)
-    for f in (base / 'Scripts').glob(f"{stem}_*.pex"):
-        files.append(f)
+    scripts = {}
+    for pattern in (f"TIF__{stem}_*.pex", f"QF__{stem}_*.pex", f"{stem}_*.pex"):
+        for f in (base / 'Scripts').glob(pattern):
+            scripts[f.name.lower()] = f
+    # Any script the plugin attaches that was compiled here ships too, whatever it is called.
+    if (base / 'Scripts').is_dir():
+        for name in vmad_script_names(Plugin.load(str(path))):
+            f = base / 'Scripts' / f"{name}.pex"
+            if f.is_file():
+                scripts.setdefault(f.name.lower(), f)
+    files += list(scripts.values())
     seq = write_seq(path) if regen_seq else path.parent / 'SEQ' / f"{path.stem}.seq"
     if regen_seq and seq:
         files.append(seq)
@@ -103,6 +140,14 @@ def write_seq(path):
     return seq
 
 
+def new_plugin(path):
+    """Empty Skyrim SE plugin. esplib defaults to header version 1.71, which makes the game ignore the biped
+    slots and armor addons of records made here (circlets show no model and stack), so write 1.70 like the CK."""
+    plugin = Plugin.new_plugin(path, masters=[], game='tes5')
+    plugin.header.version = 1.7
+    return plugin
+
+
 def hi(value):
     """Top byte of a form ID: the master index within a plugin."""
     return (value >> 24) & 0xFF
@@ -120,7 +165,7 @@ class Target:
             self.plugin = Plugin.load(str(self.path))
         elif create:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.plugin = Plugin.new_plugin(self.path, masters=[], game='tes5')
+            self.plugin = new_plugin(self.path)
         else:
             raise FileNotFoundError(f"plugin not found: {self.path}")
         self.slot_names = {slot: name for name, slot in model.slots.items()}
@@ -297,6 +342,15 @@ def apply_edits(rec, target, resolver, all_sigs, edits=None, remove=None):
         rec.modified = True
         log.append(f"removed {len(subs)} {sig}")
     for item in edits or []:
+        if 'field' in item:
+            from tools.records.fields import encode_field
+            if set(item) - {'field', 'value', 'index'} or 'value' not in item:
+                raise EditError(f"edit {item}: a named field edit takes only 'field', 'value' and 'index'")
+            try:
+                sub, offset, raw = encode_field(rec.signature, item['field'], item['value'])
+            except ValueError as e:
+                raise EditError(str(e))
+            item = {'sig': sub, 'offset': offset, 'hex': raw.hex(), 'index': item.get('index', 0)}
         bad = [k for k in item if k not in EDIT_KEYS]
         if bad or 'sig' not in item:
             raise EditError(f"edit {item}: needs 'sig' and only keys {sorted(EDIT_KEYS)}")
@@ -348,6 +402,10 @@ def describe_subrecords(rec, model, limit=96):
             ref = model.get(model.absid(rec.plugin, v)) if v else None
             if ref is not None:
                 d['form'] = f"{ref.signature} {ref.editor_id or ref.full_name or ''}".strip()
+        from tools.records.fields import decode_fields
+        named = decode_fields(rec.signature, sr.signature, data)
+        if named:
+            d['fields'] = named
         out.append(d)
     return out
 
@@ -365,7 +423,7 @@ class RecordEditor:
     def path(self, name, must_exist=False):
         return resolve_target_path(name, self.output_dir, self.data_dir, must_exist)
 
-    def get_record(self, identifier, plugin=None, signature=None):
+    def get_record(self, identifier, plugin=None, signature=None, full=False):
         """Raw dump of a record: from the named plugin's own records if given, else the loaded load order."""
         sigs = [signature.upper()] if signature else self.all_sigs()
         if plugin:
@@ -379,7 +437,7 @@ class RecordEditor:
             source = rec.plugin.file_path.name
         return {'signature': rec.signature, 'editor_id': rec.editor_id, 'name': rec.full_name,
                 'plugin': source, 'form_id': f"{rec.form_id.value:08X}",
-                'flags': f"0x{int(rec.flags):08X}", 'subrecords': describe_subrecords(rec, self.m)}
+                'flags': f"0x{int(rec.flags):08X}", 'subrecords': describe_subrecords(rec, self.m, 1 << 30 if full else 96)}
 
     def locate(self, t, identifier, sigs=None):
         """Record to edit in target t: its own copy, an existing override, or a new override."""

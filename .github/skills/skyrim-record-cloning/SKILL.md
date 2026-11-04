@@ -15,7 +15,7 @@ Use `clone_record(source, target_plugin, editor_id, name=, description=, signatu
 - `description` sets `DESC`, which is a book's readable text (HTML-like `<p align=...>` markup is allowed). A cloned book keeps the source's model; for notes, journals or longer books use `edit_book` (sets `MODL`/`MODT`/`INAM`/`OBND`/`DATA` together and formats the text) and write the text as described in `skyrim-book-writing`.
 - Pass `signature` (BOOK, WEAP, MISC...) when an editor ID could match several types.
 - Look up enchantments and effects with `search_forms("ENCH", ...)` / `("MGEF", ...)`. If a type returns nothing, add it to `LOAD_SIGS` in `tools/core/quest_model.py`.
-- Weapon enchantment: add `EITM` (form of the ENCH) then `EAMT` (uint16 charge), both before `ETYP`. `add_plant_quest` does this for `reward_weapon.enchantment`.
+- Weapon enchantment: add `EITM` (form of the ENCH) then `EAMT` (uint16 charge), both before `ETYP`. `add_plant_quest` does this for `reward_weapon.enchantment`. To author a new ENCH use `create_enchantment` (see `skyrim-enchantments`).
 - WEAP `DATA` is `<IfH` (value, weight, damage); BOOK `DATA` holds flags and value. Check with `get_record` before patching bytes with `edit_record`.
 - Subrecord order matters: copy it from the vanilla record; builder code re-sorts with an explicit order list.
 - A script that must fire for any instance of a cloned item (`OnContainerChanged`) attaches to the base form's `VMAD`, not to a reference.

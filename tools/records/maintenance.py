@@ -10,7 +10,7 @@ import esplib.defs.tes5  # noqa: F401
 from esplib import Plugin
 from esplib.record import GroupRecord
 
-from tools.core.plugin_edit import OFFICIAL, hi, plugin_files
+from tools.core.plugin_edit import OFFICIAL, hi, plugin_files, vmad_script_names
 
 # Subrecords that always hold a single form ID and must point at a real master or own record.
 FORM_SUBS = {'ALFR', 'ALUA', 'EITM', 'NAME', 'TCLT', 'QNAM', 'XOWN'}
@@ -183,6 +183,8 @@ def validate(path, data_dir=None):
             n = name.decode()
             if n.startswith(tuple(f"{p}{stem}_" for p in SCRIPT_PREFIXES)) or n.startswith(f"{stem}_"):
                 needed.add(n)
+    # A script with a source here was written for this plugin, so it needs its .pex whatever its name.
+    needed.update(n for n in vmad_script_names(plugin) if (base / 'Scripts' / 'Source' / f"{n}.psc").is_file())
     for n in sorted(needed):
         if not any((d / f"{n}.pex").exists() for d in script_dirs):
             errors.append(f"script {n} is attached but {n}.pex was not found")
@@ -227,6 +229,29 @@ def validate(path, data_dir=None):
                 warnings.append(f"{f.relative_to(base).as_posix()} is not installed in Data")
             elif digest(f) != digest(dest):
                 warnings.append(f"{f.relative_to(base).as_posix()} in Data differs from the output copy")
+    if abs(plugin.header.version - 1.7) > 0.001:
+        warnings.append(f"plugin header version is {plugin.header.version:g}, not 1.70; the game ignores armor "
+                        "slots and addons, so worn items get no model")
+    enchanted = {}
+    for r in recs:
+        if hi(r.form_id.value) != own:
+            continue
+        if r.signature == 'ENCH':
+            enit = r.get_subrecord('ENIT')
+            if enit is not None and len(enit.data) >= 16 and struct.unpack_from('<i', bytes(enit.data))[0] == 0 \
+                    and not struct.unpack_from('<I', bytes(enit.data), 4)[0] & 1:
+                warnings.append(f"enchantment {r.editor_id}: auto-calculated ENIT cost is 0; weapons using it can "
+                                "show no charge bar or recharge option (use a vanilla-like cost, e.g. 200)")
+        elif r.signature == 'WEAP' and r.get_subrecord('EITM') is not None:
+            enchanted[r.form_id.value] = r.editor_id
+            if r.get_subrecord('EAMT') is None:
+                warnings.append(f"weapon {r.editor_id} is enchanted but has no EAMT (maximum charge)")
+    for r in recs:
+        name = r.get_subrecord('NAME') if r.signature == 'REFR' else None
+        if name is not None and len(name.data) == 4 and r.get_subrecord('XCHG') is None \
+                and struct.unpack('<I', bytes(name.data))[0] in enchanted:
+            warnings.append(f"placed enchanted weapon {enchanted[struct.unpack('<I', bytes(name.data))[0]]} "
+                            f"({r.form_id.value:08X}) has no XCHG, so it spawns uncharged; use place_item")
     from tools.books.lore import lint_plugin
     for issue in lint_plugin(path, limit=20):
         warnings.append(f"lore: {issue['record']} {issue['sig']}: '{issue['match']}' - {issue['suggestion']}")
@@ -286,6 +311,67 @@ def audit_plugin(path, data_dir=None):
                                   "resolve to None at runtime")
     issues += audit_scripts(path)
     return {'plugin': path.name, 'issues': issues, 'ok': not issues}
+
+
+def deploy_plugin(path, data_dir, mode='package', remove_loose=False):
+    """Validate, then ship the plugin: a Vortex zip (mode 'package') or loose files in Data (mode 'install').
+
+    Validation errors stop the deploy. When packaging, loose copies of the plugin's files already in Data are
+    reported (they override the mod manager's files and hide changes); remove_loose deletes them."""
+    path, data_dir = Path(path), Path(data_dir)
+    if mode not in ('package', 'install'):
+        raise ValueError("mode must be 'package' or 'install'")
+    report = validate(path, data_dir)
+    out = {'plugin': path.name, 'mode': mode, 'errors': report['errors'], 'warnings': report['warnings'],
+           'deployed': False}
+    if report['errors']:
+        return out
+    if mode == 'install':
+        out.update(install(path, data_dir))
+    else:
+        from tools.core.plugin_edit import package_plugin
+        out.update(package_plugin(path))
+        loose = [data_dir / f for f in out['files'] if (data_dir / f).is_file()]
+        out['loose_in_data'] = [str(f) for f in loose]
+        if remove_loose:
+            for f in loose:
+                f.unlink()
+            out['removed_loose'] = len(loose)
+        elif loose:
+            out['note'] = ("Loose copies in Data override the mod manager's files; delete them or call again "
+                           "with remove_loose=true before testing the Vortex install.")
+    out['deployed'] = True
+    return out
+
+
+ITEM_SIGS = {'WEAP', 'ARMO', 'AMMO', 'ALCH', 'BOOK', 'MISC', 'INGR', 'KEYM', 'SCRL', 'SLGM'}
+
+
+def item_console_commands(path):
+    """Console commands to check the plugin's own records in game: additem, addspell, coc, placeatme."""
+    plugin = Plugin.load(str(path))
+    own = len(plugin.header.masters)
+    out = {'items': [], 'spells': [], 'cells': [], 'npcs': [], 'effects': [], 'placed': []}
+    for r in all_records(plugin):
+        if hi(r.form_id.value) != own:
+            continue
+        fid, edid = f"XX{r.form_id.value & 0xFFFFFF:06X}", r.editor_id or ''
+        if r.signature == 'REFR':
+            if edid:
+                out['placed'].append(f"player.moveto {fid}    ; {edid} (teleports you to the placed item)")
+        elif r.signature in ITEM_SIGS:
+            out['items'].append(f"player.additem {fid} 1    ; {edid}")
+        elif r.signature == 'SPEL':
+            out['spells'].append(f"player.addspell {fid}    ; {edid}")
+        elif r.signature == 'CELL' and edid:
+            out['cells'].append(f"coc {edid}")
+        elif r.signature == 'NPC_':
+            out['npcs'].append(f"player.placeatme {fid} 1    ; {edid}")
+        elif r.signature in ('ENCH', 'MGEF'):
+            out['effects'].append(f"{r.signature} {fid} {edid}")
+    out['note'] = ("Replace XX with the plugin's load-order index in hex; `help <EditorID> 0` in the console prints "
+                   "the full form ID. Effects are listed for reference only.")
+    return out
 
 
 def quest_console_commands(path, quest):

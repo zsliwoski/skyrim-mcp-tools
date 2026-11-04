@@ -23,7 +23,14 @@ EXPECTED_TOOLS = {
     "restore_snapshot", "install_plugin", "validate_plugin", "quest_console_commands", "make_reference_persistent",
     "list_texts", "edit_text", "edit_texts", "list_book_models", "read_book", "edit_book", "lint_text", "list_conditions", "edit_condition", "edit_script", "diff_plugin",
     "audit_plugin", "create_cell", "add_radiant_quest", "clone_records", "place_item", "get_cell_contents",
-}
+        "create_enchantment", "create_script_effect", "enchant_item", "create_spell", "create_script",
+        "create_shader", "create_unique_item", "deploy_plugin", "item_console_commands",
+        "diff_records", "copy_subrecords", "drop_conditions", "remove_records", "create_scroll",
+        "create_spell_tome",
+        "create_spell_set",
+        "find_free_spots",
+        "place_items",
+    }
 
 
 def tool_functions():

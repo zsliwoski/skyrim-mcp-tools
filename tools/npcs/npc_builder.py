@@ -18,7 +18,7 @@ from esplib.utils import FormID
 
 from tools.npcs.npc_tools import AGGRESSION, ASSISTANCE, CONFIDENCE, MORALITY, SKILLS
 from tools.papyrus.papyrus_build import compile_script, info_vmad, script_name, tif_source
-from tools.core.plugin_edit import Target, hi, resolve_target_path
+from tools.core.plugin_edit import Target, hi, new_plugin, resolve_target_path
 
 FIELDS = {
     'plugin_name': 'Output file name, e.g. "MyNpc.esp" (".esp" is added if missing).',
@@ -803,7 +803,7 @@ class NpcBuilder:
             if path.exists() and not overwrite:
                 raise FileExistsError(f"{path} exists; pass overwrite=true to replace it")
             path.parent.mkdir(parents=True, exist_ok=True)
-            plugin = Plugin.new_plugin(path, masters=[], game='tes5')
+            plugin = new_plugin(path)
             self.next_id = 0x800
         else:
             plugin = target.plugin

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import esplib.defs.tes5  # noqa: F401
 from esplib import Plugin
-
+from esplib.defs.condition_functions import get_condition_function
 from tools.records.maintenance import all_records
 from tools.papyrus.papyrus_build import compile_script
 from tools.core.plugin_edit import hi
@@ -142,7 +142,9 @@ def list_conditions(path, record):
         op = d[0] >> 5
         func, p1, p2, run_on = struct.unpack_from('<H2xIII', d, 8)
         out.append({'index': i, 'operator': OPERATOR_NAMES.get(op, str(op)), 'value': struct.unpack_from('<f', d, 4)[0],
-                    'or_next': bool(d[0] & 1), 'function': func, 'param1': f"{p1:08X}", 'param2': f"{p2:08X}",
+                    'or_next': bool(d[0] & 1), 'function': func,
+                    'function_name': (get_condition_function('tes5', func) or ('?',))[0],
+                    'param1': f"{p1:08X}", 'param2': f"{p2:08X}",
                     'run_on': run_on})
     return out
 

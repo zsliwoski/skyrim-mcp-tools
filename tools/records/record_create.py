@@ -20,7 +20,7 @@ def encode(item, builder, plan_ids):
     if k == 'hex':
         return bytes.fromhex(re.sub(r'\s', '', str(v)))
     if k == 'form':
-        fid, _ = builder.resolver.lookup(v, list(builder.m.by_sig))
+        fid, _ = builder.resolver.lookup(v, item.get('sigs') or list(builder.m.by_sig))
         plan_ids.add(fid)
         return ('form', fid)
     if k == 'empty':
