@@ -29,7 +29,8 @@ EXPECTED_TOOLS = {
         "create_spell_tome",
         "create_spell_set",
         "find_free_spots",
-        "place_items",
+        "place_items", "list_records", "find_dependents", "rename_script", "move_records", "detect_skse",
+        "enchantment_test_plan", "check_script", "resolve_form", "create_script_effects", "create_enchanted_item",
     }
 
 

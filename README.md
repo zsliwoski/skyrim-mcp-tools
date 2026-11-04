@@ -35,6 +35,7 @@ Register it in your MCP client as a stdio server running `python server.py` from
 | `SKYRIM_OUTPUT_DIR` | `.\output` | Where authored plugins, scripts, snapshots and packages are written |
 | `SKYRIM_CK_DIR` | `C:\Program Files (x86)\Steam\steamapps\common\Skyrim` | Creation Kit install folder (Papyrus compiler and `Data\Scripts.rar`) |
 | `SKYRIM_PAPYRUS_SOURCES` | `.\papyrus_src` | Cache of vanilla Papyrus sources used when compiling |
+| `SKYRIM_SKSE_SOURCES` | (none) | Extra folders of SKSE `.psc` sources (`Data\Scripts\Source` is checked automatically) |
 
 Plugin names resolve to the output folder first, then the Data folder. Absolute paths also work.
 Tools that modify plugins are serialized with a lock, so batched calls are safe.
@@ -51,12 +52,18 @@ using `tar`, so no manual setup is needed beyond installing the Creation Kit and
 python -c "from authoring.papyrus_build import ensure_sources; print(ensure_sources())"
 ```
 
+If SKSE is installed, its `.psc` sources in `Data\Scripts\Source` (or the folders listed in
+`SKYRIM_SKSE_SOURCES`) are put ahead of the vanilla ones when compiling, so scripts can call SKSE functions such
+as `RegisterForMenu` or `RegisterForAnimationEvent`. Vanilla Papyrus is preferred; use `detect_skse` first and
+see the `skyrim-skse-scripting` skill.
+
 ## Supported features
 
 ### Reading and search
 - `search_npcs`, `get_npc`, `get_npc_dialogue` – find NPCs and inspect their data and dialogue
 - `search_quests`, `get_quest`, `get_quest_structure` – quest stages, objectives, aliases, scenes, topics
 - `get_script` – decompile `.pex` scripts to pseudo-source
+- `detect_skse` – report whether SKSE is installed, whether the compiler can see its sources, and which output scripts use it
 - `search_forms`, `search_cells`, `search_references`, `get_cell_contents`, `get_record`
 - `get_npc_face`, `read_book`, `list_book_models`, `list_texts`, `list_conditions`
 
@@ -75,15 +82,24 @@ python -c "from authoring.papyrus_build import ensure_sources; print(ensure_sour
 - `create_record`, `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
   `{"sig": "ENCH", "field": "cost", "value": 250}`), `copy_subrecords`, `drop_conditions`, `remove_records`
 - `diff_records` (field-aware comparison of two records) and `get_record(full=...)` with decoded `fields`
-- `place_item`, `place_items` (several items on free floor spots), `find_free_spots`, `create_cell`,
-  `make_reference_persistent`; `get_cell_contents` takes `x`, `y`, `radius` to list the nearest objects
+- Splitting and refactoring plugins: `list_records`, `find_dependents` (what points at a group of records),
+  `move_records` (move records to another plugin, renaming editor-ID prefixes and scripts) and `rename_script`
+- `place_item` (coordinates, or `near="<something in the cell>"` to pick a free spot beside it), `place_items`
+  (several items on free floor spots), `find_free_spots`, `create_cell`, `make_reference_persistent`;
+  `get_cell_contents` takes `x`, `y`, `radius` to list the nearest objects. `search_cells`, `get_cell_contents`
+  and `find_free_spots` take `target_plugin` to include the plugin you are authoring
+  (`list_records(plugin, signature="CELL")` lists its cells)
 - Books: `edit_book` (text and in-world model)
 - `create_shader`, `create_unique_item` (clone an item with its own name, enchantment and full charge),
-  `item_console_commands` (`player.additem` / `player.moveto` lines for a plugin's items)
+  `item_console_commands` (`player.additem` / `player.addspell` lines for a plugin's items; filter with `query` and `sections`)
 
 ### Magic: enchantments, spells and scripts
 - `create_enchantment`, `enchant_item`, `create_script_effect` (Papyrus-driven effect with a `delivery` of
-  touch, aimed, ray or self; touch is a short-range ray), `create_script`
+  touch, aimed, ray or self; touch is a short-range ray), `create_script_effects` (several effects, each
+  attached to its item, in one call), `create_script`, `check_script` (dry-run compile, writes nothing),
+  `edit_script` (patch a script's source with find/replace and recompile),
+  `enchantment_test_plan` (in-game checklist for an enchanted item), `resolve_form` (editor ID to exact IDs),
+  `create_enchanted_item` (clone boots/weapon, scripted enchantment, attach and place, in one call)
 - `create_spell`, `create_spell_tome`, `create_scroll`
 - `create_spell_set`: one script backing a whole spell family (spells, tomes, scroll, staff) placed in a cell
 
@@ -93,8 +109,9 @@ python -c "from authoring.papyrus_build import ensure_sources; print(ensure_sour
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
 - `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`
-- `install_plugin` (copy to Data, with dry run), `deploy_plugin` (can remove stale loose copies) and
-  `package_plugin` (zip)
+- `install_plugin` (copy to Data, with dry run), `deploy_plugin` (validate, then `mode` "package", "install" or
+  "both" for zip plus install; can remove stale loose copies) and
+  `package_plugin` (zip); `install_plugin` and `package_plugin` also take a list of plugins
 
 `get_weather` is a placeholder tool.
 

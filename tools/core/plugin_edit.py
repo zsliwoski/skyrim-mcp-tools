@@ -453,6 +453,9 @@ class RecordEditor:
     def edit_record(self, identifier, target_plugin, edits=None, remove=None, editor_id=None,
                     record_flags=None, signature=None):
         """Edit a record in the target plugin (created if missing), overriding it first when it lives elsewhere; saves and returns a change report."""
+        if not (edits or remove or editor_id or record_flags is not None):
+            raise EditError("nothing to edit: pass edits ([{sig, string|uint32|...}] or [{field, value}]), remove, "
+                            "editor_id or record_flags (for text such as a description use edit_text)")
         path = self.path(target_plugin)
         t = Target(self.m, self.names, path, create=True)
         sigs = [signature.upper()] if signature else None

@@ -15,6 +15,17 @@ class CompileError(ValueError):
     """Raised when the CK compiler or its source files are missing, or a compile produces no .pex."""
 
 
+def skse_source_dirs(data_dir=None):
+    """Folders holding SKSE script sources (recognised by ModEvent.psc): SKYRIM_SKSE_SOURCES (path-separated),
+        then Data/Scripts/Source of the game. They go before the vanilla sources on the compiler's include path
+        because SKSE ships extended copies of Form.psc, Actor.psc and others."""
+    dirs = [Path(p) for p in os.environ.get("SKYRIM_SKSE_SOURCES", "").split(os.pathsep) if p]
+    data = Path(data_dir or os.environ.get(
+        "SKYRIM_DATA_DIR", r"C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition\Data"))
+    dirs.append(data / "Scripts" / "Source")
+    return [d for d in dirs if (d / "ModEvent.psc").is_file()]
+
+
 def ensure_sources(ck_dir=CK_DIR, cache=SOURCE_CACHE):
     """Extract the vanilla script sources from the CK's Scripts.rar once; return the Source folder."""
     src = Path(cache) / "Scripts" / "Source"
@@ -43,8 +54,9 @@ def compile_script(name, source, scripts_dir, ck_dir=CK_DIR, cache=SOURCE_CACHE)
     psc.write_text(source, encoding="cp1252")
     pex = scripts_dir / f"{name}.pex"
     pex.unlink(missing_ok=True)
+    includes = ";".join([str(mine.resolve())] + [str(d) for d in skse_source_dirs()] + [str(vanilla)])
     cmd = [str(compiler), f"{name}.psc", f"-f={vanilla / 'TESV_Papyrus_Flags.flg'}",
-           f"-i={mine.resolve()};{vanilla}", f"-o={scripts_dir.resolve()}"]
+           f"-i={includes}", f"-o={scripts_dir.resolve()}"]
     res = subprocess.run(cmd, capture_output=True, text=True, cwd=mine)
     out = (res.stdout + res.stderr).strip()
     if not pex.is_file():

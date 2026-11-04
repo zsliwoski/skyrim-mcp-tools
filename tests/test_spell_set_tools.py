@@ -48,7 +48,7 @@ class TestSpellSet:
         assert struct.unpack_from("<II", bytes(recs["TestSetTouchSpell"].get_subrecord("SPIT").data), 16) == (2, 2)
         assert struct.unpack_from("<H", bytes(recs["TestSetStaff"].get_subrecord("EAMT").data))[0] == 3000
         server._models.clear()
-        placed = server.item_console_commands("Ench.esp")["placed"]
+        placed = server.item_console_commands("Ench.esp", sections=["placed"])["placed"]
         assert any("TestSetStaffRef" in c for c in placed)
         server._models.clear()
         free = server.find_free_spots("TestHall", 0, 0, 0, count=2, plugins=["Skyrim.esm", "Ench.esp"])

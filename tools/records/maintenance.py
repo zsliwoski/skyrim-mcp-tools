@@ -314,23 +314,27 @@ def audit_plugin(path, data_dir=None):
 
 
 def deploy_plugin(path, data_dir, mode='package', remove_loose=False):
-    """Validate, then ship the plugin: a Vortex zip (mode 'package') or loose files in Data (mode 'install').
+    """Validate, then ship the plugin: a Vortex zip (mode 'package'), loose files in Data (mode 'install') or
+    both (mode 'both': zip first, then loose files).
 
     Validation errors stop the deploy. When packaging, loose copies of the plugin's files already in Data are
-    reported (they override the mod manager's files and hide changes); remove_loose deletes them."""
+    reported (they override the mod manager's files and hide changes); remove_loose deletes them. In mode
+    'both' the loose copies are the install, so they are kept."""
     path, data_dir = Path(path), Path(data_dir)
-    if mode not in ('package', 'install'):
-        raise ValueError("mode must be 'package' or 'install'")
+    if mode not in ('package', 'install', 'both'):
+        raise ValueError("mode must be 'package', 'install' or 'both'")
     report = validate(path, data_dir)
     out = {'plugin': path.name, 'mode': mode, 'errors': report['errors'], 'warnings': report['warnings'],
            'deployed': False}
     if report['errors']:
         return out
-    if mode == 'install':
-        out.update(install(path, data_dir))
-    else:
+    if mode in ('package', 'both'):
         from tools.core.plugin_edit import package_plugin
         out.update(package_plugin(path))
+    if mode in ('install', 'both'):
+        installed = install(path, data_dir)
+        out.update({'install': installed} if mode == 'both' else installed)
+    elif mode == 'package':
         loose = [data_dir / f for f in out['files'] if (data_dir / f).is_file()]
         out['loose_in_data'] = [str(f) for f in loose]
         if remove_loose:
@@ -347,31 +351,143 @@ def deploy_plugin(path, data_dir, mode='package', remove_loose=False):
 ITEM_SIGS = {'WEAP', 'ARMO', 'AMMO', 'ALCH', 'BOOK', 'MISC', 'INGR', 'KEYM', 'SCRL', 'SLGM'}
 
 
-def item_console_commands(path):
-    """Console commands to check the plugin's own records in game: additem, addspell, coc, placeatme."""
+def item_console_commands(path, query=None, sections=None):
+    """Console commands to check the plugin's own records in game: additem, addspell, coc, placeatme.
+
+    query: only records whose editor ID contains it. sections: subset of items, spells, cells, npcs, effects,
+    placed (default: all but placed, which lists teleports to every named placed reference)."""
     plugin = Plugin.load(str(path))
     own = len(plugin.header.masters)
-    out = {'items': [], 'spells': [], 'cells': [], 'npcs': [], 'effects': [], 'placed': []}
+    names = ['items', 'spells', 'cells', 'npcs', 'effects', 'placed']
+    wanted = list(sections) if sections else [n for n in names if n != 'placed']
+    unknown = [s for s in wanted if s not in names]
+    if unknown:
+        raise ValueError(f"unknown sections {unknown}; choose from {names}")
+    low = (query or '').lower()
+    out = {n: [] for n in wanted}
     for r in all_records(plugin):
         if hi(r.form_id.value) != own:
             continue
         fid, edid = f"XX{r.form_id.value & 0xFFFFFF:06X}", r.editor_id or ''
+        if low and low not in edid.lower():
+            continue
         if r.signature == 'REFR':
-            if edid:
+            if edid and 'placed' in out:
                 out['placed'].append(f"player.moveto {fid}    ; {edid} (teleports you to the placed item)")
         elif r.signature in ITEM_SIGS:
-            out['items'].append(f"player.additem {fid} 1    ; {edid}")
+            if 'items' in out:
+                out['items'].append(f"player.additem {fid} 1    ; {edid}")
         elif r.signature == 'SPEL':
-            out['spells'].append(f"player.addspell {fid}    ; {edid}")
+            if 'spells' in out:
+                out['spells'].append(f"player.addspell {fid}    ; {edid}")
         elif r.signature == 'CELL' and edid:
-            out['cells'].append(f"coc {edid}")
+            if 'cells' in out:
+                out['cells'].append(f"coc {edid}")
         elif r.signature == 'NPC_':
-            out['npcs'].append(f"player.placeatme {fid} 1    ; {edid}")
+            if 'npcs' in out:
+                out['npcs'].append(f"player.placeatme {fid} 1    ; {edid}")
         elif r.signature in ('ENCH', 'MGEF'):
-            out['effects'].append(f"{r.signature} {fid} {edid}")
+            if 'effects' in out:
+                out['effects'].append(f"{r.signature} {fid} {edid}")
     out['note'] = ("Replace XX with the plugin's load-order index in hex; `help <EditorID> 0` in the console prints "
                    "the full form ID. Effects are listed for reference only.")
     return out
+
+
+SKSE_CALLS = re.compile(r'\b(RegisterForMenu|RegisterForKey|RegisterForModEvent|SendModEvent|GetDialogueTarget|RegisterForAnimationEvent|'
+                        r'StringUtil|UICallback|ModEvent|NetImmerse|WornObject)\b')
+PAPYRUS_LOG = r"Documents\My Games\Skyrim Special Edition\Logs\Script\Papyrus.0.log"
+
+
+def enchantment_test_plan(path, item):
+    """Checklist for trying an enchanted item (or a bare ENCH) in game, built from the plugin's own records:
+    commands to get and equip it, each effect with its script and description, SKSE use, where to look."""
+    from esplib.vmad import VmadData
+    path = Path(path)
+    plugin = Plugin.load(str(path))
+    own = len(plugin.header.masters)
+    recs = {r.form_id.value: r for r in all_records(plugin) if hi(r.form_id.value) == own}
+    by_edid = {(r.editor_id or '').lower(): r for r in recs.values()}
+    rec = by_edid.get(item.lower())
+    if rec is None:
+        raise ValueError(f"{item!r} is not a record of {path.name}")
+    holder = None
+    if rec.signature == 'ENCH':
+        ench = rec
+    else:
+        eitm = rec.get_subrecord('EITM')
+        if eitm is None:
+            raise ValueError(f"{item} has no enchantment (EITM); use enchant_item first")
+        holder = rec
+        ench = recs.get(struct.unpack_from('<I', bytes(eitm.data))[0])
+        if ench is None:
+            raise ValueError(f"{item}'s enchantment is not in {path.name}")
+    ids = [struct.unpack_from('<I', bytes(s.data))[0] for s in ench.subrecords if s.signature == 'EFID']
+    stats = [bytes(s.data) for s in ench.subrecords if s.signature == 'EFIT']
+    effects, scripts, skse, spells = [], [], [], []
+    source_dir = path.parent / 'Scripts' / 'Source'
+    for i, fid in enumerate(ids):
+        mag = struct.unpack_from('<f', stats[i])[0] if i < len(stats) else 0.0
+        mgef = recs.get(fid)
+        if mgef is None:
+            effects.append({'effect': f"{fid:08X}", 'magnitude': mag, 'origin': 'vanilla or another plugin'})
+            continue
+        dnam = mgef.get_subrecord('DNAM')
+        entry = {'effect': mgef.editor_id, 'name': mgef.full_name, 'magnitude': mag,
+                 'description': bytes(dnam.data).rstrip(b'\0').decode('cp1252', 'replace') if dnam else ''}
+        try:
+            vm = VmadData.from_record(mgef) if mgef.get_subrecord('VMAD') is not None else None
+        except Exception:
+            vm = None
+        for s in (vm.scripts if vm else []):
+            entry.setdefault('scripts', []).append(s.name)
+            scripts.append(s.name)
+            psc = source_dir / f"{s.name}.psc"
+            if psc.is_file():
+                text = psc.read_text(encoding='cp1252', errors='replace')
+                skse += [f"{s.name}: {c}" for c in sorted(set(SKSE_CALLS.findall(text)))]
+                spells += [f"{int(m, 16):06X}" for m in re.findall(r'GetFormFromFile\(\s*(0x[0-9A-Fa-f]+)', text)]
+        effects.append(entry)
+    target = holder or ench
+    name = target.editor_id
+    commands = ([f"player.additem XX{holder.form_id.value & 0xFFFFFF:06X} 1    ; {name}",
+                 f"player.equipitem XX{holder.form_id.value & 0xFFFFFF:06X}"] if holder else [])
+    plan = {
+        'item': name, 'enchantment': ench.editor_id, 'effects': effects, 'commands': commands,
+        'expect': ["The item's tooltip lists each effect above (script effects show their description).",
+                   "Constant effects start on equip and stop on unequip: unequip and re-equip after any change.",
+                   "Script effects log to the Papyrus log; no entry means the script never started."],
+        'where_to_look': [f"%USERPROFILE%\\{PAPYRUS_LOG} (needs bEnableLogging=1 and bEnableTrace=1 under [Papyrus] "
+                          "in Skyrim.ini)", "Magic menu > Active Effects for effects and ability spells."],
+    }
+    if scripts:
+        first = scripts[0]
+        plan['debug_tip'] = (f'To see it start without the log, add Debug.Notification("{first} running") to '
+                             f'OnEffectStart (edit_script find/replace), reinstall, and remove it afterwards; '
+                             f'or Debug.Trace("{first}: started") and search the Papyrus log for it.')
+    if spells:
+        plan['ability_spells_looked_up'] = sorted(set(spells))
+        plan['expect'].append("Ability spells the script adds or removes appear and disappear in Active Effects "
+                              "as their conditions change.")
+    if skse:
+        plan['requires_skse'] = skse
+        plan['expect'].append("Start the game through skse64_loader.exe or these scripts do nothing.")
+    return plan
+
+
+def check_script(source):
+    """Compile source in a scratch folder (nothing is written next to a plugin). Returns ok and the compiler output."""
+    import tempfile
+    from tools.papyrus.papyrus_build import CompileError, compile_script
+    m = re.search(r'^\s*scriptname\s+([A-Za-z][A-Za-z0-9_]*)', source, re.I | re.M)
+    if not m:
+        raise ValueError("source must start with 'Scriptname <name> ...'")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            compile_script(m.group(1), source, tmp)
+        except CompileError as e:
+            return {'script': m.group(1), 'ok': False, 'output': str(e)}
+    return {'script': m.group(1), 'ok': True, 'output': ''}
 
 
 def quest_console_commands(path, quest):

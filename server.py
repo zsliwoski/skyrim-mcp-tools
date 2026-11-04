@@ -20,6 +20,7 @@ WRITE_TOOLS = {
     'create_enchantment', 'create_script_effect', 'enchant_item', 'create_spell', 'create_script',
     'create_shader', 'create_unique_item', 'deploy_plugin', 'copy_subrecords', 'remove_records',
     'drop_conditions', 'create_scroll', 'create_spell_tome', 'place_items', 'create_spell_set',
+    'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item',
 }
 _write_lock = threading.RLock()
 _register_tool = mcp.tool
@@ -104,7 +105,7 @@ def script_tools(plugins):
 @mcp.tool()
 def get_weather(location: str = "Whiterun") -> str:
     """Print the weather for a location (placeholder)."""
-    return f"The weather in {location} is sunny, 72°F (placeholder data)."
+    return f"The weather in {location} is sunny, 72Ã‚Â°F (placeholder data)."
 
 
 @mcp.tool()
@@ -233,6 +234,21 @@ def get_script(name: str, include_source: bool = False, plugins: list[str] | Non
     return script_tools(plugins).describe(name, include_source)
 
 
+@mcp.tool()
+def detect_skse() -> dict:
+    """Check whether the Skyrim Script Extender (SKSE) is present, without changing anything.
+
+    Reports the SKSE loader and runtime DLLs beside the game, SKSE plugins in Data/SKSE/Plugins, SKSE script
+    files in Data/Scripts, whether the Papyrus compiler's source folders contain SKSE sources (needed to compile
+    SKSE calls), and which scripts in the output folder already reference SKSE-only types. See the
+    skyrim-skse-scripting skill: prefer vanilla Papyrus and ask the user before using SKSE.
+    """
+    from tools.papyrus.papyrus_build import SOURCE_CACHE, skse_source_dirs
+    from tools.papyrus.skse import detect_skse as detect
+    return detect(DATA_DIR, OUTPUT_DIR,
+                  [SOURCE_CACHE / "Scripts" / "Source"] + skse_source_dirs(DATA_DIR))
+
+
 OUTPUT_DIR = Path(os.environ.get("SKYRIM_OUTPUT_DIR", Path(__file__).resolve().parent / "output"))
 _drafts = {}
 
@@ -266,14 +282,22 @@ def search_forms(signature: str, query: str = "", limit: int = 25,
     return builder.resolver.search([sig], query, limit)
 
 
+def _cell_builder(plugins, target_plugin=None):
+    """Builder for cell lookups; target_plugin (an output plugin being authored) is loaded too."""
+    return npc_builder(_with_target(plugins, target_plugin) if target_plugin else plugins)
+
+
 @mcp.tool()
-def search_cells(query: str, limit: int = 25, plugins: list[str] | None = None) -> list[dict]:
+def search_cells(query: str, limit: int = 25, plugins: list[str] | None = None,
+                 target_plugin: str | None = None) -> list[dict]:
     """Find cells (interior or exterior) by editor ID or name, for placing a custom NPC.
 
     Returns form ID, editor ID, name, plugin, whether it is an interior and, for exterior cells,
     the grid. Use the editor ID/name as placement.cell, or worldspace plus grid_x/grid_y.
+    target_plugin: an output plugin being authored, so its own cells are searched too.
+    To list every cell a plugin defines, use list_records(plugin, signature="CELL").
     """
-    return npc_builder(plugins).cells.search(query, limit)
+    return _cell_builder(plugins, target_plugin).cells.search(query, limit)
 
 
 @mcp.tool()
@@ -581,6 +605,15 @@ def _auto_snapshot(plugin, label):
         snapshot(path, label)
 
 
+def _for_each(plugin, fn):
+    """fn(plugin) for one plugin name, or {name: fn(name)} for a list of them."""
+    if isinstance(plugin, str):
+        return fn(plugin)
+    if not plugin:
+        return {"error": "give at least one plugin"}
+    return {name: fn(name) for name in plugin}
+
+
 def _out_path(plugin):
     from tools.core.plugin_edit import resolve_target_path
     return resolve_target_path(plugin, OUTPUT_DIR, DATA_DIR, must_exist=True)
@@ -693,6 +726,97 @@ def _refresher(plugins, target_plugin):
 
 
 @mcp.tool()
+def create_script_effects(target_plugin: str, items: list[dict], plugins: list[str] | None = None) -> list[dict]:
+    """Create several script enchantments, and attach each to its item, in one call.
+
+    items: list of dicts with the create_script_effect fields (editor_id, name, script_name, source and the
+    optional description, kind, cost, extra_effects, ...) plus optional `item` (the ARMO/WEAP editor ID to
+    enchant with the new ENCH) and `replace` (true to overwrite its current enchantment). One snapshot is
+    taken first. Items are done in order; a failing one is reported and the rest still run (a compile error
+    changes nothing for that item). Returns one result per item: the effect/enchantment, plus `enchanted`.
+    """
+    results = []
+    _auto_snapshot(target_plugin, "pre_script_effects")
+    for spec in items:
+        spec = dict(spec)
+        item, replace = spec.pop("item", None), spec.pop("replace", False)
+        spec.pop("target_plugin", None)
+        spec.pop("plugins", None)
+        res = create_script_effect(target_plugin=target_plugin, plugins=plugins, **spec)
+        if "error" not in res and item:
+            ench = (res.get("enchantment") or {}).get("editor_id")
+            if ench:
+                res["enchanted"] = enchant_item(item=item, target_plugin=target_plugin, enchantment=ench,
+                                                replace=replace, plugins=plugins)
+            else:
+                res["enchanted"] = {"error": "no enchantment was created to attach"}
+        results.append(res)
+    return results
+
+
+@mcp.tool()
+def create_enchanted_item(source: str, target_plugin: str, editor_id: str, name: str, script_name: str,
+                          script_source: str, effect_description: str = "", description: str | None = None,
+                          kind: str | None = None, cost: int = 200, charge: int | None = None,
+                          extra_effects: list[dict] | None = None, duration: int | None = None,
+                          cell: str | None = None, x: float | None = None, y: float | None = None,
+                          z: float | None = None, near: str | None = None, rotation_z: float = 0.0,
+                          plugins: list[str] | None = None) -> dict:
+    """Make a new item with its own scripted enchantment (SKSE or vanilla Papyrus), and optionally place it.
+
+    One call: compile-check script_source (nothing changes if it fails), clone `source` (a vanilla ARMO or
+    WEAP) as `editor_id`/`name`, create the script effect <editor_id>Effect and enchantment
+    <editor_id>EffectEnch, attach it, and when `cell` is given place the item (x/y/z, or near=something in
+    the cell). kind is inferred from the source ("armor" or "weapon"); weapons take charge and duration
+    (script effect length, default 1). cost is the enchantment's gold cost (200 avoids the zero-cost
+    warning). script_source is the full ActiveMagicEffect script. Uses the same pieces as clone_record,
+    create_script_effect, enchant_item and place_item, with one snapshot first. Check SKSE use with
+    detect_skse and ask the user before using SKSE calls (see the skyrim-skse-scripting skill).
+    """
+    from tools.records.maintenance import check_script
+    try:
+        checked = check_script(script_source)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+    if not checked.get("ok"):
+        return {"error": "script does not compile; nothing was changed", "compiler": checked.get("output")}
+    kind = kind or {"ARMO": "armor", "WEAP": "weapon"}.get(
+        (resolve_form(source, plugins=plugins).get("matches") or [{}])[0].get("type"))
+    if kind not in ("armor", "weapon"):
+        return {"error": "source must be an ARMO or WEAP (or pass kind='armor' or 'weapon')"}
+    _auto_snapshot(target_plugin, "pre_enchanted_item")
+    steps = {}
+    steps["item"] = clone_record(source=source, target_plugin=target_plugin, editor_id=editor_id, name=name,
+                                 description=description, plugins=plugins)
+    if "error" in steps["item"]:
+        return {"error": steps["item"]["error"], "steps": steps}
+    steps["effect"] = create_script_effect(target_plugin=target_plugin, editor_id=f"{editor_id}Effect",
+                                           name=name, script_name=script_name, source=script_source,
+                                           description=effect_description, kind=kind, cost=cost,
+                                           extra_effects=extra_effects, duration=duration, plugins=plugins)
+    ench = (steps["effect"].get("enchantment") or {}).get("editor_id")
+    if "error" in steps["effect"] or not ench:
+        return {"error": steps["effect"].get("error", "no enchantment was created"), "steps": steps}
+    with _lock:
+        _models.clear()
+    steps["enchant"] = enchant_item(item=editor_id, target_plugin=target_plugin, enchantment=ench,
+                                    charge=charge, plugins=plugins)
+    if "error" in steps["enchant"]:
+        return {"error": steps["enchant"]["error"], "steps": steps}
+    with _lock:
+        _models.clear()
+    if cell:
+        steps["placed"] = place_item(base=editor_id, target_plugin=target_plugin, cell=cell, x=x, y=y, z=z,
+                                     rotation_z=rotation_z, editor_id=f"{editor_id}Ref", near=near,
+                                     plugins=plugins)
+        if "error" in steps["placed"]:
+            return {"error": steps["placed"]["error"], "steps": steps}
+    return {"item": editor_id, "enchantment": ench, "script": script_name, "steps": steps,
+            "next": "validate_plugin, then deploy_plugin(mode='both') and restart Skyrim; "
+                    f"enchantment_test_plan('{target_plugin}', '{editor_id}') lists the in-game checks."}
+
+
+@mcp.tool()
 def create_scroll(target_plugin: str, editor_id: str, name: str, effects: list[dict], delivery: str = "aimed",
                   description: str = "", cost: int = 0, plugins: list[str] | None = None) -> dict:
     """Create a scroll (SCRL) that casts the given effects once, modelled on a vanilla scroll.
@@ -777,7 +901,8 @@ def create_unique_item(source: str, target_plugin: str, editor_id: str, name: st
 
 @mcp.tool()
 def deploy_plugin(plugin: str, mode: str = "package", remove_loose: bool = False) -> dict:
-    """Validate a plugin, then ship it: a Vortex zip (mode "package") or loose files in Data (mode "install").
+    """Validate a plugin, then ship it: a Vortex zip (mode "package"), loose files in Data (mode "install")
+    or both (mode "both": zip, then install loose copies into Data for testing).
 
     Validation errors stop the deploy. When packaging, loose copies already in the Data folder are listed
     (they override Vortex's files); remove_loose deletes them so the Vortex install is what runs.
@@ -790,16 +915,69 @@ def deploy_plugin(plugin: str, mode: str = "package", remove_loose: bool = False
 
 
 @mcp.tool()
-def item_console_commands(plugin: str) -> dict:
+def item_console_commands(plugin: str, query: str | None = None, sections: list[str] | None = None) -> dict:
     """In-game console commands to try a plugin's own items, spells, cells and NPCs (additem, addspell, coc...).
 
+    query: only records whose editor ID contains it (e.g. "Aurelius"). sections: any of items, spells, cells,
+    npcs, effects, placed (default: all but placed, the teleports to every named placed reference).
     Form IDs use XX for the load-order index; run `help <EditorID> 0` in the console to see the real prefix.
+    For one enchanted item, enchantment_test_plan gives a fuller checklist.
     """
     from tools.records.maintenance import item_console_commands as run
     try:
-        return run(_out_path(plugin))
+        return run(_out_path(plugin), query, sections)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
+
+
+@mcp.tool()
+def enchantment_test_plan(plugin: str, item: str) -> dict:
+    """In-game test checklist for an enchanted item (or an ENCH editor ID) in an output plugin.
+
+    Lists the console commands to add and equip it, each effect with its magnitude, description and script,
+    ability spells the script looks up, whether it needs SKSE (start via skse64_loader.exe) and where the
+    Papyrus log is. Built from the plugin's records and the scripts' .psc sources.
+    """
+    from tools.records.maintenance import enchantment_test_plan as run
+    try:
+        return run(_out_path(plugin), item)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def check_script(source: str) -> dict:
+    """Compile a Papyrus script as a dry run: returns ok and the compiler output; writes nothing to any plugin.
+
+    source starts with `Scriptname <name> ...`. Uses the same include paths as create_script (SKSE sources
+    first when installed, then vanilla), so it shows whether an idea compiles before any record is touched.
+    """
+    from tools.records.maintenance import check_script as run
+    try:
+        return run(source)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def resolve_form(identifier: str, signature: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Look up the exact form for an editor ID (e.g. JobJarlFaction) and return its IDs, ready for a script.
+
+    Returns form_id (8 hex, load-order prefixed), local_id (6 hex, the value for Game.GetFormFromFile(0x...,
+    "Plugin.esp")), type, name and plugin for exact editor ID matches, or the closest few names when there is
+    none. signature narrows the type (FACT, KYWD, SPEL, ...). Use it instead of guessing Skyrim.esm IDs.
+    """
+    from tools.core.quest_model import LOAD_SIGS
+    resolver = npc_builder(plugins).resolver
+    sigs = [signature.upper()] if signature else sorted(LOAD_SIGS)
+    found = resolver.search(sigs, identifier, 200)
+    exact = [d for d in found if (d["editor_id"] or "").lower() == identifier.lower()]
+    for d in exact:
+        d["local_id"] = d["form_id"][2:]
+    if exact:
+        return {"matches": exact}
+    return {"matches": [], "similar": [d["editor_id"] for d in found[:8]],
+            "error": f"no record with editor ID {identifier!r}"}
 
 
 @mcp.tool()
@@ -871,20 +1049,42 @@ def clone_records(target_plugin: str, items: list[dict], plugins: list[str] | No
         return {"error": str(e)}
 
 
+def _spot_near(plugins, target_plugin, cell, near, clearance=40.0):
+    """A free floor point beside the first reference in `cell` whose base editor ID or name matches `near`."""
+    from tools.cells.cell_contents import find_free_spots as free, get_cell_contents as contents
+    b = _cell_builder(plugins, target_plugin)
+    seen = contents(b, cell, near, None, 5)
+    refs = seen.get("references") or []
+    if not refs:
+        raise ValueError(f"nothing matching {near!r} in cell {cell!r}; use get_cell_contents to see what is there")
+    ref = refs[0]
+    spots = free(b, cell, ref["x"], ref["y"], ref["z"], 1, 30.0, clearance, 400.0).get("spots") or []
+    if not spots:
+        raise ValueError(f"no free floor spot within 400 units of {near!r}")
+    return spots[0]["x"], spots[0]["y"], spots[0]["z"]
+
+
 @mcp.tool()
-def place_item(base: str, target_plugin: str, cell: str, x: float, y: float, z: float,
+def place_item(base: str, target_plugin: str, cell: str, x: float | None = None, y: float | None = None,
+               z: float | None = None,
                rotation_z: float = 0.0, scale: float | None = None, persistent: bool = False,
                editor_id: str | None = None, rotation_x: float = 0.0, rotation_y: float = 0.0,
-               charge: float | None = None, plugins: list[str] | None = None) -> dict:
+               charge: float | None = None, plugins: list[str] | None = None, near: str | None = None) -> dict:
     """Place one reference to any base object (book, armor, misc item, static...) in an existing cell.
 
     base: editor ID, name or form ID, including records already in target_plugin. cell: editor ID or name
     (see search_cells). x, y, z in game units, rotation_x/y/z in degrees (rotation_x 90 lays a dagger flat).
+    Instead of coordinates, pass near: the editor ID or name of something already in the cell (an NPC, a
+    table...) and the item goes on the nearest free floor spot beside it. Coordinates win when given.
     Use get_cell_contents for the cell's furniture and shelf positions, or search_references to copy
     coordinates from a nearby object. An enchanted weapon is placed with full charge (its EAMT); pass charge
     to override. Set persistent for items a script or quest must reach. The file is backed up to .bak.
     """
     try:
+        if x is None or y is None or z is None:
+            if not near:
+                raise ValueError("give x, y and z, or near (something in the cell to place the item beside)")
+            x, y, z = _spot_near(plugins, target_plugin, cell, near)
         from tools.cells.place_item import place_item as run
         res = run(npc_builder(_with_target(plugins, target_plugin)), base, target_plugin, cell, x, y, z,
                   rotation_z, scale, persistent, editor_id, rotation_x, rotation_y, charge)
@@ -897,8 +1097,10 @@ def place_item(base: str, target_plugin: str, cell: str, x: float, y: float, z: 
 @mcp.tool()
 def get_cell_contents(cell: str, query: str | None = None, signature: str | None = None, limit: int = 100,
                       x: float | None = None, y: float | None = None, radius: float | None = None,
-                      plugins: list[str] | None = None) -> dict:
+                      plugins: list[str] | None = None, target_plugin: str | None = None) -> dict:
     """List what is placed in a cell: each reference's base (type, editor ID, name) and position.
+
+    target_plugin: the output plugin being authored; its cells, references and bases are included.
 
     cell: editor ID or name. query filters by base editor ID or name; signature by base type (STAT, FURN,
     CONT, BOOK...). x, y and radius keep only references within that horizontal distance, nearest first.
@@ -908,7 +1110,7 @@ def get_cell_contents(cell: str, query: str | None = None, signature: str | None
     """
     try:
         from tools.cells.cell_contents import get_cell_contents as run
-        return run(npc_builder(plugins), cell, query, signature, limit, x, y, radius)
+        return run(_cell_builder(plugins, target_plugin), cell, query, signature, limit, x, y, radius)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 
@@ -916,16 +1118,16 @@ def get_cell_contents(cell: str, query: str | None = None, signature: str | None
 @mcp.tool()
 def find_free_spots(cell: str, x: float, y: float, z: float, count: int = 1, spacing: float = 30.0,
                     clearance: float = 25.0, radius: float = 300.0, height: float = 120.0,
-                    plugins: list[str] | None = None) -> dict:
+                    plugins: list[str] | None = None, target_plugin: str | None = None) -> dict:
     """Find free floor points near (x, y, z) in a cell, nearest first, on a grid of `spacing` units.
 
     A point is free when no reference within `height` of z lies closer than `clearance` (lights are ignored).
-    Pass plugins with Skyrim.esm and the plugin being authored so its own references count. Feed the points to
-    place_item, or use place_items to do both.
+    Pass target_plugin (the plugin being authored) so its own cell and references count. Feed the points to
+    place_item, or use place_items to do both; place_item(near=...) picks a spot for you.
     """
     try:
         from tools.cells.cell_contents import find_free_spots as run
-        return run(npc_builder(plugins), cell, x, y, z, count, spacing, clearance, radius, height)
+        return run(_cell_builder(plugins, target_plugin), cell, x, y, z, count, spacing, clearance, radius, height)
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
 
@@ -1055,17 +1257,23 @@ def restore_snapshot(plugin: str, snapshot: str = "latest") -> dict:
 
 
 @mcp.tool()
-def install_plugin(plugin: str, dry_run: bool = False) -> dict:
+def install_plugin(plugin: str | list[str], dry_run: bool = False) -> dict:
     """Copy an output plugin, its scripts, FaceGen files and a regenerated SEQ file into the Skyrim Data folder.
 
     Reports each file as new/changed/same. dry_run only reports. Use this instead of Vortex for fast
     testing; it avoids a stale Data copy or SEQ file (the usual reason a new quest does not load).
+    Pass a list of plugins to install several at once; the result is keyed by plugin, and one failing
+    plugin does not stop the others.
     """
     from tools.records.maintenance import install
-    try:
-        return install(_out_path(plugin), DATA_DIR, dry_run)
-    except (ValueError, FileNotFoundError) as e:
-        return {"error": str(e)}
+
+    def one(name):
+        try:
+            return install(_out_path(name), DATA_DIR, dry_run)
+        except (ValueError, FileNotFoundError) as e:
+            return {"error": str(e)}
+
+    return _for_each(plugin, one)
 
 
 @mcp.tool()
@@ -1256,10 +1464,13 @@ def edit_condition(plugin: str, record: str, index: int, operator: str | None = 
 @mcp.tool()
 def edit_script(plugin: str, script: str, source: str | None = None, find: str | None = None,
                 replace: str | None = None) -> dict:
-    """Read, replace or patch a Papyrus script generated for an output plugin, then recompile its .pex.
+    """Read, replace or patch the Papyrus source of any script in an output plugin, then recompile its .pex.
 
-    With only script: returns the current source. With source: replaces it. With find+replace: patches it.
-    The old source is restored if compilation fails. Reinstall afterwards (install_plugin).
+    Works for every script with a .psc in the plugin's Scripts/Source, including enchantment effect scripts
+    (e.g. GemCuttersGuild_NotePrice), not only generated fragments. With only script: returns the current
+    source. With source: replaces it. With find+replace: patches it in place, so a one-line change needs no
+    resend of the whole script. The old source is restored if compilation fails. The MGEF keeps its script
+    attachment, so no record edit is needed. Reinstall afterwards (install_plugin).
     """
     from tools.records.edit_tools import edit_script as run
     return _guarded(lambda: run(_out_path(plugin), script, source, find, replace))
@@ -1406,6 +1617,70 @@ def remove_records(plugin: str, records: list[str]) -> dict:
 
 
 @mcp.tool()
+def list_records(plugin: str, query: str | None = None, signature: str | None = None, min_id: int | None = None,
+                 max_id: int | None = None, limit: int = 100) -> dict:
+    """List the records a plugin in the output folder defines itself: form ID, type, editor ID and name.
+
+    query matches editor ID or name (substring); signature limits the type (SPEL, BOOK...); min_id/max_id
+    bound the object ID (decimal, e.g. 2857 for 0xB29). Also returns a count per type. Use it to see what a
+    plugin holds before splitting it (see skyrim-plugin-refactoring).
+    """
+    from tools.records.migrate import list_records as run
+    return _guarded(lambda: run(_out_path(plugin), query, signature, min_id, max_id, limit))
+
+
+@mcp.tool()
+def find_dependents(plugin: str, records: list[str] | None = None, query: str | None = None,
+                    include_dependencies: bool = False) -> dict:
+    """Find everything tied to a group of your own records: what points at them and what they point at.
+
+    Pick the group with records (editor IDs or hex IDs) and/or query (editor-ID substring, e.g. "Midas").
+    Returns referenced_by (other records holding their form IDs), placed (references in cells), refers_to
+    (own records the group needs that are outside it) and scripts (.psc lines that look them up by object
+    ID, e.g. GetFormFromFile). include_dependencies grows the group to everything it needs. Run it before
+    move_records or remove_records.
+    """
+    from tools.records.migrate import find_dependents as run
+    return _guarded(lambda: run(_out_path(plugin), records, query, include_dependencies))
+
+
+@mcp.tool()
+def rename_script(plugin: str, old: str, new: str) -> dict:
+    """Rename a Papyrus script used by an output plugin: every VMAD that attaches it, the compiled .pex and
+    the .psc in Scripts/Source (the old files are removed). A snapshot is taken first; reinstall afterwards.
+    Fragment scripts (QF_/TIF_/PF_/SF_) cannot be renamed. Needs the Creation Kit compiler."""
+    from tools.records.migrate import rename_script as run
+    return _guarded(lambda: run(_out_path(plugin), old, new), "pre_rename_script", plugin)
+
+
+@mcp.tool()
+def move_records(source_plugin: str, target_plugin: str, records: list[str] | None = None,
+                 query: str | None = None, rename_prefix: dict | None = None,
+                 script_renames: dict | None = None, remove_from_source: bool = True,
+                 allow_dangling: bool = False) -> dict:
+    """Move own records (spells, items, effects...) from one output plugin to another, e.g. to split a mod.
+
+    Pick them with records and/or query (editor-ID substring). Form IDs are kept. target_plugin is created if
+    missing; both plugins must have the same master list. rename_prefix {"from": "GCG_", "to": "MT_"} changes
+    editor IDs; script_renames {"OldScript": "NewScript"} renames attached scripts and recompiles them for
+    the target (plugin file names inside the source are swapped too). remove_from_source deletes the originals
+    and every placed reference to them; place the items again with place_item(s) in the target. Placed
+    references, cells and dialogue cannot be moved. Fails if a moved record needs one that stays behind
+    (see find_dependents) unless allow_dangling. Snapshots of both plugins are taken first.
+    """
+    from tools.core.plugin_edit import resolve_target_path
+    from tools.records.migrate import move_records as run
+    try:
+        src = _out_path(source_plugin)
+        dst = resolve_target_path(target_plugin, OUTPUT_DIR, DATA_DIR)
+        _auto_snapshot(target_plugin, "pre_move_records")
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+    return _guarded(lambda: run(src, dst, records, query, rename_prefix, script_renames, remove_from_source,
+                                allow_dangling), "pre_move_records", source_plugin)
+
+
+@mcp.tool()
 def get_record(identifier: str, plugin: str | None = None, signature: str | None = None, full: bool = False,
                plugins: list[str] | None = None) -> dict:
     """Show a record's raw subrecords (hex plus light decoding) to plan an edit_record call.
@@ -1438,7 +1713,9 @@ def edit_record(identifier: str, target_plugin: str, edits: list[dict] | None = 
       string, uint8, int8, uint16, int16, uint32, int32, float, hex, or form (an identifier resolved to a
       form ID; optional form_type limits the record signature). offset patches bytes inside the
       subrecord (e.g. ACBS level at offset 8 as uint16); append adds another subrecord of that sig.
-    remove: list of 'SIG' or {sig, index}. Use get_record first to see the subrecords.
+    remove: list of 'SIG' or {sig, index}. Use get_record first to see the subrecords. At least one of edits,
+    remove, editor_id or record_flags is required (an empty call is an error). For a text subrecord such as an
+    effect's description (DNAM) or a name (FULL), edit_text is simpler: edit_text(plugin, record, "DNAM", text).
     Named fields: {field, value} edits a decoded field of MGEF (cast_type, delivery, base_cost, flags...),
       SPEL/SCRL (cost, cast_type, delivery, charge_time...), ENCH (cost, amount, cast_type, delivery),
       BOOK (value, weight), WEAP (charge) or REFR (charge); value is a number or a name such as
@@ -1454,17 +1731,25 @@ def edit_record(identifier: str, target_plugin: str, edits: list[dict] | None = 
 
 
 @mcp.tool()
-def package_plugin(plugin: str, zip_path: str | None = None) -> dict:
+def package_plugin(plugin: str | list[str], zip_path: str | None = None) -> dict:
     """Zip a plugin from the output folder with its loose FaceGen files, ready to install in Vortex.
 
     In Vortex use "Install From File" (or drag the zip in), then enable the mod and the plugin.
-    Re-run after each edit and reinstall/replace the mod.
+    Re-run after each edit and reinstall/replace the mod. Pass a list of plugins to package several at
+    once (one zip each in output/packages; the result is keyed by plugin, and one failing plugin does not
+    stop the others); zip_path applies to a single plugin only.
     """
     from tools.core.plugin_edit import package_plugin as pack, resolve_target_path
-    try:
-        return pack(resolve_target_path(plugin, OUTPUT_DIR, DATA_DIR, must_exist=True), zip_path)
-    except (ValueError, FileNotFoundError) as e:
-        return {"error": str(e)}
+    if isinstance(plugin, list) and zip_path:
+        return {"error": "zip_path can only be used with a single plugin"}
+
+    def one(name):
+        try:
+            return pack(resolve_target_path(name, OUTPUT_DIR, DATA_DIR, must_exist=True), zip_path)
+        except (ValueError, FileNotFoundError) as e:
+            return {"error": str(e)}
+
+    return _for_each(plugin, one)
 
 
 def main() -> None:
