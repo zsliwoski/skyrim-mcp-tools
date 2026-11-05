@@ -166,6 +166,16 @@ before building, and ask the user before substituting a different behaviour (see
 optional and work the same way as for lore (`python -m tools.papyrus_api build vectors`, same model, separate
 embeddings).
 
+**Quick setup**
+1. Make sure the Papyrus sources exist: install the Creation Kit (`SKYRIM_CK_DIR`) and let a first compile extract
+   `Data\Scripts.rar` into `papyrus_src/` (see [Papyrus sources and compiler](#papyrus-sources-and-compiler)). If SKSE
+   is installed, its `.psc` files in `Data\Scripts\Source` are picked up automatically.
+2. `python -m tools.papyrus_api build scripts` (the essential step; add `--all-scripts` to index non-native
+   scripts too), then `python -m tools.papyrus_api build actor-values`.
+3. Check it with `python -m tools.papyrus_api status`, or the `api_status` tool.
+4. Rerun `build scripts` after installing or updating SKSE, otherwise SKSE-only members are not flagged `[SKSE]`.
+   The `build_api_db` tool does the same from inside a session. Restart the MCP server if it was running with no database.
+
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
 - `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`
