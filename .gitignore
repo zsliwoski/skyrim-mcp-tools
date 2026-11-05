@@ -4,6 +4,11 @@
 # Extracted vanilla Papyrus sources (Bethesda content)
 /papyrus_src/
 
+# User-built lore database (third-party text, never committed)
+/lore_db/
+*.xml.bz2
+*.xml.gz
+
 # Python
 __pycache__/
 *.py[cod]

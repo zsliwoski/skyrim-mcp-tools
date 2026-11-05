@@ -20,7 +20,7 @@ WRITE_TOOLS = {
     'create_enchantment', 'create_script_effect', 'enchant_item', 'create_spell', 'create_script',
     'create_shader', 'create_unique_item', 'deploy_plugin', 'copy_subrecords', 'remove_records',
     'drop_conditions', 'create_scroll', 'create_spell_tome', 'place_items', 'create_spell_set',
-    'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item',
+    'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item', 'build_lore_db',
 }
 _write_lock = threading.RLock()
 _register_tool = mcp.tool
@@ -100,12 +100,6 @@ def script_tools(plugins):
         if key not in _stores:
             _stores[key] = ScriptStore(DATA_DIR, script_bsas(key))
     return ScriptTools(m, _stores[key])
-
-
-@mcp.tool()
-def get_weather(location: str = "Whiterun") -> str:
-    """Print the weather for a location (placeholder)."""
-    return f"The weather in {location} is sunny, 72Ã‚Â°F (placeholder data)."
 
 
 @mcp.tool()
@@ -1432,6 +1426,66 @@ def edit_book(plugin: str, record: str, kind: str | None = None, variant: str | 
         _invalidate()
         return out
     return _guarded(run, "pre_edit_book", plugin)
+
+
+@mcp.tool()
+def lore_search(query: str, limit: int = 8, source: str | None = None, mode: str = "auto") -> list[dict] | dict:
+    """Search the local Elder Scrolls lore database for facts about people, places, factions, history and
+    in-game books. Returns snippets with page title, section, url and license; cite them and write original
+    text rather than copying. source: 'uesp' or 'game'. mode: 'auto' (hybrid keyword+semantic when vectors
+    were built, else keyword), 'keyword' (best for exact names), 'semantic' (best for concepts and
+    paraphrase) or 'hybrid'. If no database exists the error says how the user can build one
+    (`python -m tools.lore build ...`)."""
+    from tools.lore import db, vectors
+    return _guarded(lambda: vectors.search(db.connect(), query, max(1, min(limit, 50)), source, mode))
+
+
+@mcp.tool()
+def lore_get(title: str, section: str | None = None, source: str | None = None) -> list[dict] | dict:
+    """Full text of one lore page (or one section) from the local lore database, following redirects.
+    title: a page title as returned by lore_search, e.g. 'Lore:Dwemer'."""
+    from tools.lore import db
+
+    def run():
+        rows = db.get_page(db.connect(), title, section, source)
+        return rows if rows else {"error": f"no lore page {title!r}; try lore_search"}
+    return _guarded(run)
+
+
+@mcp.tool()
+def lore_status() -> dict:
+    """Show which lore sources are indexed (license, attribution, build date, size) in the local database."""
+    from tools.lore import db
+    return _guarded(lambda: db.status(db.connect()))
+
+
+@mcp.tool()
+def build_lore_db(source: str, file: str | None = None, namespaces: list[str] | None = None,
+                  plugins: list[str] | None = None) -> dict:
+    """Build or refresh one source of the local lore database (replaces that source's rows).
+    source 'game-books': index book text from the loaded plugins (defaults to Skyrim.esm).
+    source 'uesp-dump': import a UESP MediaWiki XML export (.xml/.gz/.bz2) the user downloaded, given as
+    file; namespaces defaults to Lore and Skyrim. The UESP API crawl is only available from the command
+    line (`python -m tools.lore build uesp-crawl`) because it is slow.
+    source 'vectors': embed chunks for semantic search (needs `pip install fastembed`; downloads a small
+    model on first use; can take minutes for the full wiki, so prefer the command line for that)."""
+    from tools.lore import db, uesp, vectors
+
+    def run():
+        con = db.connect(create=True)
+        if source == 'game-books':
+            from tools.lore.game import index_books
+            n = index_books(con, get_model(plugins))
+        elif source == 'uesp-dump':
+            if not file:
+                raise ValueError("uesp-dump needs file")
+            n = uesp.import_dump(con, file, namespaces or uesp.DEFAULT_NAMESPACES)
+        elif source == 'vectors':
+            n = vectors.build(con)
+        else:
+            raise ValueError("source must be 'game-books', 'uesp-dump' or 'vectors'")
+        return {"source": source, "chunks": n, **db.status(con)}
+    return _guarded(run)
 
 
 @mcp.tool()

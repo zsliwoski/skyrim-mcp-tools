@@ -101,6 +101,3 @@ class TestScriptsAndRecords:
     def test_describe_npc_fields(self):
         fields = server.describe_npc_fields()
         assert {"editor_id", "name", "clone_from", "follower", "dialogue", "placement"} <= set(fields)
-
-    def test_weather_placeholder(self):
-        assert "Whiterun" in server.get_weather()

@@ -16,7 +16,7 @@ EXPECTED_TOOLS = {
     "add_fetch_quest", "add_npc_dialogue", "add_quest_alias", "add_quest_stage_script", "create_npc",
     "create_npc_draft", "create_record", "describe_npc_fields", "edit_npc", "edit_npc_face", "edit_record",
     "get_npc", "get_npc_dialogue", "get_npc_draft", "get_npc_face", "get_quest", "get_quest_structure",
-    "get_record", "get_script", "get_weather", "package_plugin", "paint_npc_face", "search_cells",
+    "get_record", "get_script", "package_plugin", "paint_npc_face", "search_cells",
     "search_forms", "search_npcs", "search_quests", "search_references", "update_npc_draft",
     "validate_npc_draft", "write_npc_plugin",
     "add_kill_quest", "add_plant_quest", "add_quest", "clone_record", "snapshot_plugin", "list_snapshots",
@@ -31,6 +31,7 @@ EXPECTED_TOOLS = {
         "find_free_spots",
         "place_items", "list_records", "find_dependents", "rename_script", "move_records", "detect_skse",
         "enchantment_test_plan", "check_script", "resolve_form", "create_script_effects", "create_enchanted_item",
+        "lore_search", "lore_get", "lore_status", "build_lore_db",
     }
 
 

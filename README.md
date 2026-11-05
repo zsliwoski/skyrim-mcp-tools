@@ -12,6 +12,7 @@ Built on `esplib` for plugin parsing and the Python `mcp` SDK (`MCPServer`).
 - Python 3.13
 - Skyrim Special Edition (the `Data` folder is read for masters and scripts)
 - Python packages from [requirements.txt](requirements.txt): `mcp`, `Pillow` and `numpy` (face painting), `pytest` (tests)
+- Optional: [requirements-lore.txt](requirements-lore.txt) (`fastembed`) for semantic lore search
 - `esplib`, bundled in [esplib/](esplib) (modified copy; it requires `lz4`). `requirements.txt` installs it, or install it alone with:
 
 ```powershell
@@ -36,6 +37,7 @@ Register it in your MCP client as a stdio server running `python server.py` from
 | `SKYRIM_CK_DIR` | `C:\Program Files (x86)\Steam\steamapps\common\Skyrim` | Creation Kit install folder (Papyrus compiler and `Data\Scripts.rar`) |
 | `SKYRIM_PAPYRUS_SOURCES` | `.\papyrus_src` | Cache of vanilla Papyrus sources used when compiling |
 | `SKYRIM_SKSE_SOURCES` | (none) | Extra folders of SKSE `.psc` sources (`Data\Scripts\Source` is checked automatically) |
+| `SKYRIM_LORE_DB` | `.\lore_db\lore.db` | Local lore database (see [Lore database](#lore-database-optional-built-locally)) |
 
 Plugin names resolve to the output folder first, then the Data folder. Absolute paths also work.
 Tools that modify plugins are serialized with a lock, so batched calls are safe.
@@ -106,6 +108,32 @@ see the `skyrim-skse-scripting` skill.
 ### Text, conditions and scripts
 - `edit_text`, `edit_texts`, `lint_text`, `edit_condition`, `edit_script`
 
+### Lore database (optional, built locally)
+- `lore_search`, `lore_get`, `lore_status`, `build_lore_db`
+
+This repo ships no lore text. You build a SQLite full-text index on your own machine, and it is git-ignored
+(`lore_db/lore.db`, or set `SKYRIM_LORE_DB`). Sources, each stored with its license and page URL:
+
+| Source | Command | License of the text |
+|---|---|---|
+| `game`: books in your installed plugins | `python -m tools.lore build game-books` | your own game data, local use only |
+| `uesp`: UESP wiki Lore/Skyrim pages, from an XML export you download | `python -m tools.lore build uesp-dump <file.xml.bz2>` | CC BY-SA 2.5, attribute UESP |
+| `uesp`: the same through the API (slow, 1 request per second) | `python -m tools.lore build uesp-crawl --limit 500` | CC BY-SA 2.5, attribute UESP |
+
+Then `python -m tools.lore status` and `python -m tools.lore search "Dwemer"` check it. Building a source
+replaces that source's rows.
+
+**Optional semantic search.** Keyword search is best for exact names; vectors help with concepts and paraphrase
+("who opposes the Thalmor"). Run `pip install -r requirements-lore.txt` (fastembed: CPU only, no PyTorch), then
+`python -m tools.lore build vectors`. The model (`BAAI/bge-small-en-v1.5`, about 130 MB) downloads on first
+use and everything stays local. Embedding is CPU-bound, so a full UESP import takes a long while (the 1,500
+game books alone took several minutes); it is incremental, so an interrupted run resumes and only new chunks
+are embedded. Once vectors exist, `lore_search` defaults to a hybrid of keyword and semantic results
+(`mode` can force `keyword`, `semantic` or `hybrid`). Rebuilding a source drops its vectors; rerun `build vectors`.
+
+Use the results as reference and cite them; do not paste wiki or game text into
+a published plugin or redistribute the database.
+
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
 - `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`
@@ -113,15 +141,14 @@ see the `skyrim-skse-scripting` skill.
   "both" for zip plus install; can remove stale loose copies) and
   `package_plugin` (zip); `install_plugin` and `package_plugin` also take a list of plugins
 
-`get_weather` is a placeholder tool.
-
 ## Project layout
 
 - [server.py](server.py) – MCP tool definitions
 - [tools/](tools) – everything `server.py` relies on, grouped by form category:
   [core/](tools/core) (plugin model and editor shared by everything), [quests/](tools/quests), [npcs/](tools/npcs) (including face data),
   [dialogue/](tools/dialogue), [papyrus/](tools/papyrus) (compile and decompile), [books/](tools/books), [cells/](tools/cells)
-  (cells, references, item placement), [records/](tools/records) (cloning, generic edits, text, snapshots)
+  (cells, references, item placement), [records/](tools/records) (cloning, generic edits, text, snapshots),
+  [lore/](tools/lore) (local lore database builder and search)
 - [esplib/](esplib) – bundled, modified plugin-parsing library (MPL 2.0)
 - [tests/](tests) – pytest suite
 - [.github/skills/](.github/skills) – assistant guidance for common Skyrim modding workflows
