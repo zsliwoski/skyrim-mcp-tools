@@ -6,6 +6,7 @@
 
 # User-built lore database (third-party text, never committed)
 /lore_db/
+/api_db/
 *.xml.bz2
 *.xml.gz
 

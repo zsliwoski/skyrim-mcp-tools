@@ -17,7 +17,7 @@ LOAD_SIGS = {
     'ACTI', 'ALCH', 'BOOK', 'FLOR', 'TREE', 'INGR', 'KEYM', 'AMMO', 'SCRL',
     'SLGM', 'APPA', 'SOUN', 'TACT', 'SPEL', 'HAZD', 'IDLM', 'ARTO',
     'RACE', 'CLAS', 'VTYP', 'PERK', 'KYWD', 'OTFT', 'CLFM', 'CSTY', 'LVLI', 'LVLN', 'LVSP', 'SHOU', 'FLST',
-    'HDPT', 'ENCH', 'MGEF', 'GLOB', 'MESG', 'EQUP', 'ARMA', 'EFSH',
+    'HDPT', 'ENCH', 'MGEF', 'GLOB', 'MESG', 'EQUP', 'ARMA', 'EFSH', 'AVIF',
 }
 REF_SIGS = {'REFR', 'ACHR', 'PGRE', 'PHZD', 'PMIS', 'PARW', 'PBEA', 'PCON', 'PFLA'}
 ALIAS_FORM_SUBS = {

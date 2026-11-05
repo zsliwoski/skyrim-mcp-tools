@@ -29,6 +29,18 @@ class TestQuests:
         assert any(n.endswith("TestMod_TestFetchQuest_Pickup.pex") for n in names)
         assert sum(1 for n in names if "TIF__TestMod_" in n) >= 2
 
+    def test_fetch_item_is_unowned_quest_object(self, npc_plugin):
+        from esplib import Plugin
+        assert "error" not in server.add_fetch_quest("TestSven", FETCH_SPEC, "TestMod.esp")
+        plug = Plugin(str(npc_plugin))
+        ref = next(r for r in plug.records if r.editor_id == "TestWoodRef")
+        assert bytes(ref.get_subrecord("XOWN").data) == bytes.fromhex("07000000")
+        assert [s.signature for s in ref.subrecords].index("XOWN") < [s.signature for s in ref.subrecords].index("DATA")
+        quest = next(r for r in plug.records if r.editor_id == "TestFetchQuest")
+        alias_flags = [int.from_bytes(bytes(s.data), "little") for s in quest.subrecords if s.signature == "FNAM"
+                       and len(s.data) == 4]
+        assert 6 in alias_flags
+
     def test_fetch_quest_rejects_bad_spec(self, npc_plugin):
         assert "error" in server.add_fetch_quest("TestSven", {"quest_editor_id": "Q"}, "TestMod.esp")
 

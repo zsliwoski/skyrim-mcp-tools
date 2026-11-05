@@ -32,6 +32,7 @@ EXPECTED_TOOLS = {
         "place_items", "list_records", "find_dependents", "rename_script", "move_records", "detect_skse",
         "enchantment_test_plan", "check_script", "resolve_form", "create_script_effects", "create_enchanted_item",
         "lore_search", "lore_get", "lore_status", "build_lore_db",
+        "api_search", "api_get", "api_status", "build_api_db",
     }
 
 

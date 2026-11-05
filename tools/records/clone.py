@@ -9,6 +9,7 @@ from tools.core.plugin_edit import Target, hi, resolve_target_path
 
 # Text subrecords per record type that can be overridden in place.
 TEXT_SUBS = {'name': 'FULL', 'description': 'DESC'}
+NON_PLAYABLE = 0x4
 
 
 def clone_into(b, plugin, src, new_fid, edid, drop, extra=()):
@@ -64,9 +65,16 @@ def clone_record(b, source, target_plugin, editor_id, name=None, description=Non
         hit[0].data = z(value)
     if src.get_subrecord('VMAD') is not None:
         rec.remove_subrecords('VMAD')
+    # vanilla NPC-only gear carries the Non-Playable flag, which keeps a clone out of the inventory
+    cleared = src.signature in ('ARMO', 'WEAP') and bool(int(rec.flags) & NON_PLAYABLE)
+    if cleared:
+        value = int(rec.flags) & ~NON_PLAYABLE
+        rec.flags = value if isinstance(rec.flags, int) else type(rec.flags)(value, rec.flags._names)
     plugin.add_record(rec)
     plugin.header.next_object_id = new_id + 1
     target.save()
-    return {'path': str(path), 'created': {'type': src.signature, 'editor_id': editor_id,
-                                          'form_id': f"{rec.form_id.value:08X}", 'cloned_from': source},
-            'masters': list(plugin.header.masters)}
+    created = {'type': src.signature, 'editor_id': editor_id,
+               'form_id': f"{rec.form_id.value:08X}", 'cloned_from': source}
+    if cleared:
+        created['cleared_flags'] = 'Non-Playable'
+    return {'path': str(path), 'created': created, 'masters': list(plugin.header.masters)}

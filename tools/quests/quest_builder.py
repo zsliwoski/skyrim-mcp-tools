@@ -15,6 +15,8 @@ GET_ITEM_COUNT, GET_STAGE = 47, 58
 EQ, GE, LT = 0, 3, 4
 SUBJECT, TARGET = 0, 1
 QUEST_TYPE_MISC = 6
+QUEST_OBJECT = 4
+PLAYER_NPC = 7
 
 REQUIRED = ('quest_editor_id', 'quest_name', 'item_editor_id', 'item_name', 'item_clone_from', 'placement',
             'log', 'objectives', 'offer', 'reminder', 'turn_in', 'done')
@@ -122,6 +124,9 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
     ref = Record('REFR', FormID(b.own(new_id())), 0x400 if persistent else 0)
     ref.add_subrecord('EDID', z(iid + 'Ref'))
     ref.add_subrecord('NAME', fid_bytes(item_fid))
+    if not spec.get('stolen', False):
+        # an explicit player owner stops an owned cell (shop, inn) making the pickup theft
+        ref.add_subrecord('XOWN', fid_bytes(PLAYER_NPC))
     ref.add_subrecord('DATA', struct.pack('<6f', pl['x'], pl['y'], pl['z'], 0.0, 0.0, 0.0))
     b.place_ref(plugin, p.cell, ref, persistent, made)
 
@@ -153,7 +158,7 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
     if spec.get('marker', True):
         q.add_subrecord('ALST', struct.pack('<I', 1))
         q.add_subrecord('ALID', z('QuestItem'))
-        q.add_subrecord('FNAM', struct.pack('<I', 2))
+        q.add_subrecord('FNAM', struct.pack('<I', 2 | QUEST_OBJECT))
         q.add_subrecord('ALFR', fid_bytes(ref.form_id.value))
         q.add_subrecord('VTCK', fid_bytes(0))
         q.add_subrecord('ALED', b'')

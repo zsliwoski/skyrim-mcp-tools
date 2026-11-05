@@ -5,7 +5,8 @@ from xml.sax.saxutils import escape
 import numpy as np
 import pytest
 
-from tools.lore import db, uesp, vectors, wikitext
+from tools.knowledge import wikitext
+from tools.lore import db, uesp, vectors
 
 PAGE = """{{Infobox|name=Foo}}
 The '''Zorgmoot''' are a [[Lore:Imaginary Folk|fictional people]] of the [[Skyrim:Test Hold|test hold]].<ref>x</ref>

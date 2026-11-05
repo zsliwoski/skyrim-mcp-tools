@@ -38,6 +38,7 @@ Register it in your MCP client as a stdio server running `python server.py` from
 | `SKYRIM_PAPYRUS_SOURCES` | `.\papyrus_src` | Cache of vanilla Papyrus sources used when compiling |
 | `SKYRIM_SKSE_SOURCES` | (none) | Extra folders of SKSE `.psc` sources (`Data\Scripts\Source` is checked automatically) |
 | `SKYRIM_LORE_DB` | `.\lore_db\lore.db` | Local lore database (see [Lore database](#lore-database-optional-built-locally)) |
+| `SKYRIM_API_DB` | `.\api_db\api.db` | Local Papyrus API database (see [Papyrus API database](#papyrus-api-database-optional-built-locally-separate-from-lore)) |
 
 Plugin names resolve to the output folder first, then the Data folder. Absolute paths also work.
 Tools that modify plugins are serialized with a lock, so batched calls are safe.
@@ -56,8 +57,9 @@ python -c "from authoring.papyrus_build import ensure_sources; print(ensure_sour
 
 If SKSE is installed, its `.psc` sources in `Data\Scripts\Source` (or the folders listed in
 `SKYRIM_SKSE_SOURCES`) are put ahead of the vanilla ones when compiling, so scripts can call SKSE functions such
-as `RegisterForMenu` or `RegisterForAnimationEvent`. Vanilla Papyrus is preferred; use `detect_skse` first and
-see the `skyrim-skse-scripting` skill.
+as `RegisterForMenu` or `RegisterForAnimationEvent`. Vanilla Papyrus is preferred, but an approved behaviour is
+never swapped for a vanilla approximation without asking the user first; use `detect_skse` and `api_get` to check
+what a plan needs, and see the `skyrim-skse-scripting` skill.
 
 ## Supported features
 
@@ -65,6 +67,7 @@ see the `skyrim-skse-scripting` skill.
 - `search_npcs`, `get_npc`, `get_npc_dialogue` – find NPCs and inspect their data and dialogue
 - `search_quests`, `get_quest`, `get_quest_structure` – quest stages, objectives, aliases, scenes, topics
 - `get_script` – decompile `.pex` scripts to pseudo-source
+- `api_get`, `api_search`, `api_status` – look up Papyrus functions and events (see the API database section)
 - `detect_skse` – report whether SKSE is installed, whether the compiler can see its sources, and which output scripts use it
 - `search_forms`, `search_cells`, `search_references`, `get_cell_contents`, `get_record`
 - `get_npc_face`, `read_book`, `list_book_models`, `list_texts`, `list_conditions`
@@ -77,12 +80,16 @@ see the `skyrim-skse-scripting` skill.
 
 ### Quest authoring
 - `add_quest` with kinds fetch, kill, plant and radiant: `add_fetch_quest`, `add_kill_quest`,
-  `add_plant_quest`, `add_radiant_quest`
+  `add_plant_quest`, `add_radiant_quest`. A fetch quest's item is owned by the player (no theft bounty;
+  `stolen: true` keeps the cell owner) and its alias carries the Quest Object flag so it cannot be dropped.
 - `add_quest_alias`, `add_quest_stage_script`, `search_quests`, `quest_console_commands`
+- `package_plugin` writes a SEQ file so start-game-enabled quests start on existing saves; the quest-authoring
+  skill also describes a bootstrap quest that starts a plugin's quests when it is installed mid-playthrough
 
 ### Records, items and world
 - `create_record`, `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
-  `{"sig": "ENCH", "field": "cost", "value": 250}`), `copy_subrecords`, `drop_conditions`, `remove_records`
+  `{"sig": "ENCH", "field": "cost", "value": 250}`, or `record_flags`), `copy_subrecords`, `drop_conditions`,
+  `remove_records`. `clone_record` clears the Non-Playable flag on ARMO and WEAP clones so they show in the inventory.
 - `diff_records` (field-aware comparison of two records) and `get_record(full=...)` with decoded `fields`
 - Splitting and refactoring plugins: `list_records`, `find_dependents` (what points at a group of records),
   `move_records` (move records to another plugin, renaming editor-ID prefixes and scripts) and `rename_script`
@@ -134,6 +141,31 @@ are embedded. Once vectors exist, `lore_search` defaults to a hybrid of keyword 
 Use the results as reference and cite them; do not paste wiki or game text into
 a published plugin or redistribute the database.
 
+### Papyrus API database (optional, built locally, separate from lore)
+- `api_get`, `api_search`, `api_status`, `build_api_db`
+
+Functional facts for writing Papyrus live in their own SQLite file (`api_db/api.db`, or set `SKYRIM_API_DB`),
+so lore queries never return script text and script lookups never return flavour. Both databases share the
+same store and embedding code in [knowledge/](tools/knowledge); `lore_*` tools only touch the lore file and `api_*`
+tools only touch this one. Use `api_get(script, member)` for exact lookups and `api_search` for intent. Only
+`native` members are indexed, so a missing member means the call does not exist **unless** it is a
+non-native engine event such as `OnInit` (declared in the base script type, not natively); those return empty
+even though they are valid, so confirm them against the compiler with `check_script`. Each result carries
+`skse: true` for members that need the Script Extender (for example `RegisterForKey`, `OnKeyDown`,
+`Actor.IsSwimming`), and `api_get` on a member searches the script's parent chain (`OnPlayerLoadGame` is on
+`ReferenceAlias`, `Actor` and `ActiveMagicEffect`, not `Form`). Verify every call of a planned script this way
+before building, and ask the user before substituting a different behaviour (see the `skyrim-skse-scripting` skill).
+
+| Source | Command | Notes |
+|---|---|---|
+| `psc`: functions, events and properties of every script | `python -m tools.papyrus_api build scripts` | your own sources (extracted CK sources plus SKSE sources found by `SKYRIM_SKSE_SOURCES` / `Data\Scripts\Source`); members only in the SKSE copy are flagged `[SKSE]`; rerun after changing SKSE. Only scripts declaring `native` members are indexed (engine API); pass `--all-scripts` for everything. Actor values drop the `AV` EditorID prefix (`AVHealth` → `Health`) |
+| `actor-values`: ActorValueInfo records | `python -m tools.papyrus_api build actor-values` | your own game data |
+| `ckwiki`: Creation Kit wiki pages | `python -m tools.papyrus_api build ckwiki-dump <file.xml.bz2>` or `ckwiki-crawl --limit 500` | CC BY-SA 3.0, attribute the CK wiki |
+
+`python -m tools.papyrus_api get Actor DamageActorValue` and `... search "restore health"` check it. Vectors are
+optional and work the same way as for lore (`python -m tools.papyrus_api build vectors`, same model, separate
+embeddings).
+
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
 - `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`
@@ -148,7 +180,9 @@ a published plugin or redistribute the database.
   [core/](tools/core) (plugin model and editor shared by everything), [quests/](tools/quests), [npcs/](tools/npcs) (including face data),
   [dialogue/](tools/dialogue), [papyrus/](tools/papyrus) (compile and decompile), [books/](tools/books), [cells/](tools/cells)
   (cells, references, item placement), [records/](tools/records) (cloning, generic edits, text, snapshots),
-  [lore/](tools/lore) (local lore database builder and search)
+  [lore/](tools/lore) (local lore database builder and search),
+  [papyrus_api/](tools/papyrus_api) (local Papyrus API database: scripts, actor values, CK wiki),
+  [knowledge/](tools/knowledge) (SQLite/FTS store, embeddings and MediaWiki import shared by both)
 - [esplib/](esplib) – bundled, modified plugin-parsing library (MPL 2.0)
 - [tests/](tests) – pytest suite
 - [.github/skills/](.github/skills) – assistant guidance for common Skyrim modding workflows

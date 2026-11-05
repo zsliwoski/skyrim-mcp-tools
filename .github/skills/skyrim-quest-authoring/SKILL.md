@@ -33,6 +33,8 @@ For reading existing quests see `skyrim-quest-structure`; for dialogue details `
 - Player topics for a quest NPC go in the NPC's existing, proven dialogue quest (`<Npc>DialogueQuest`), not in the fetch quest. A separate fetch quest with FULL, stages and objectives was running (stage 0) yet its topics never showed, although the records matched byte for byte. `add_fetch_quest` now does this by default (override with `dialogue_quest_editor_id`); the topics still test the fetch quest's stage via `GetStage` CTDAs.
 - Keep the fetch quest for stages, objectives and aliases only.
 - A `QuestItem` ALFR alias pointing at a persistent exterior ref did not fill in game. The offer topic's TIF script therefore fills it with `ForceRefTo`, then calls `SetStage(10)` and `SetObjectiveDisplayed(10)`. Aliases are optional (FNAM 2) so the quest still starts if a fill fails.
+- Quest-specific items (a fetch quest's item) must carry the "Quest Item" flag so the player cannot drop or sell them. In the CK this is the alias's "Quest Object" option (alias FNAM flag `0x4`, so `0x6` with Optional) on the alias that holds the item, and that alias must fill (ForceRefTo or a persistent ALFR). `add_fetch_quest` sets `0x6` on its `QuestItem` alias; confirm in game that the item cannot be dropped. Flag items only for the quest's duration: do not give an ordinary reward (such as the boots) this flag.
+- Quest items must not be owned, or taking them is theft and the player earns a bounty for finishing the quest. A reference placed in an owned cell (a shop, house or inn) inherits the cell's owner, so give the item's REFR an explicit `XOWN` (4 bytes, placed after `NAME` and before `DATA`) naming the player (`NPC_` `0x00000007`) unless the quest design says the item is stolen. A REFR with no XOWN is not enough. `add_fetch_quest` writes this owner automatically (spec `stolen: true` keeps the cell owner). Check the cell's owner with `get_cell_contents`/`get_record`. Add it by hand to any other quest item or container the player must take.
 - Quest topics have no hired/follower condition, so they show while the NPC is a follower; add a GetInFaction condition to the topic only if that is unwanted.
 - Debugging order when a topic is missing: `sqv <quest>`, `getstage <quest>`, check the NPC's other topics, then move the topic into the working dialogue quest. Test on a fresh save and reinstall the zip after every rebuild.
 - Rebuilding a quest: records can't be deleted. Builder tools take a snapshot first (`pre_<kind>_quest`); `restore_snapshot(plugin, "pre_plant_quest")` then rerun the builder, then `install_plugin`.
@@ -52,6 +54,14 @@ Edit in place first; rebuild only when records change shape.
 - Markers: `make_reference_persistent`; check with `audit_plugin` and `validate_plugin`.
 - Review changes with `diff_plugin` (vs latest snapshot), then `install_plugin`. Edit tools snapshot automatically; `restore_snapshot` undoes them.
 - Snapshot, restore and rerun the builder only when a record's structure must change.
+
+## Installing mid-playthrough (bootstrap quest)
+Players add mods to running saves, so a quest plugin must start itself there. Verified with `api_get`: `Quest.Start()` and `Quest.IsRunning()` are vanilla, and `ReferenceAlias.OnPlayerLoadGame` is a **vanilla** event (not SKSE), so no SKSE version of the bootstrap is needed.
+- Make one `<Plugin>Bootstrap` quest: Start Game Enabled, Run Once off, with a quest script whose `OnInit` calls `Start()` on every other quest of the plugin (check `IsRunning()` first). Only the bootstrap quest needs Start Game Enabled; existing quests may keep it as a second safety net, since the `IsRunning()` check makes a double start harmless. The SEQ file (`package_plugin` generates it) lists every Start Game Enabled quest.
+- Re-check on every load: give the bootstrap quest a `Player` ReferenceAlias (ALFR `0x14`, flags Optional + Allow Reused) with an alias script whose `OnPlayerLoadGame` runs the same start-if-not-running routine. This repairs quests that a missing SEQ or a mod-manager hiccup left stopped.
+- If a quest is not running, `startquest <EditorID>` in the console is the manual fallback (this fixed Torvald's dialogue on an existing save).
+- SKSE adds nothing here. If a design ever needs an SKSE-only hook for this, ask the user first (see `skyrim-skse-scripting`).
+- Not yet automated: no builder writes the bootstrap quest. Build it with `create_record` plus `create_script`/`papyrus_build`, then test by installing onto a save made before the plugin existed.
 
 ## Not yet automated
 Scenes, quest start from a script, and alias scripts. Use `create_record` plus `papyrus_build` as building blocks, and test in game.

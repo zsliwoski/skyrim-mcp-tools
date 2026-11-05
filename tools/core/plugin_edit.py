@@ -465,7 +465,10 @@ class RecordEditor:
             log += apply_edits(rec, t, self.resolver, self.all_sigs(),
                                [{'sig': 'EDID', 'string': editor_id}])
         if record_flags is not None:
-            rec.flags = type(rec.flags)(record_flags) if not isinstance(rec.flags, int) else record_flags
+            if isinstance(rec.flags, int):
+                rec.flags = record_flags
+            else:
+                rec.flags = type(rec.flags)(record_flags, rec.flags._names)
             log.append(f"record flags = 0x{int(record_flags):08X}")
         t.save()
         return {'path': str(t.path), 'created_plugin': not t.existed, 'record': how,

@@ -18,6 +18,14 @@ class TestEnchantHelpers:
         miss = server.resolve_form("JobJarlFactio", "FACT")
         assert miss["matches"] == [] and "JobJarlFaction" in miss["similar"]
 
+    def test_clone_clears_non_playable(self, sandbox):
+        from helpers import make_hall
+        make_hall()
+        res = server.clone_record("ArmorThievesGuildHelmet", "Ench.esp", "PlayableHood", "Hood")
+        assert "error" not in res, res
+        assert res["created"]["cleared_flags"] == "Non-Playable"
+        assert server.get_record("PlayableHood", plugin="Ench.esp")["flags"] == "0x00000000"
+
     def test_edit_record_requires_an_edit(self, sandbox):
         res = server.edit_record("JobJarlFaction", "X.esp")
         assert "nothing to edit" in res["error"]

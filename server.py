@@ -20,7 +20,7 @@ WRITE_TOOLS = {
     'create_enchantment', 'create_script_effect', 'enchant_item', 'create_spell', 'create_script',
     'create_shader', 'create_unique_item', 'deploy_plugin', 'copy_subrecords', 'remove_records',
     'drop_conditions', 'create_scroll', 'create_spell_tome', 'place_items', 'create_spell_set',
-    'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item', 'build_lore_db',
+    'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item', 'build_lore_db', 'build_api_db',
 }
 _write_lock = threading.RLock()
 _register_tool = mcp.tool
@@ -499,7 +499,10 @@ def add_fetch_quest(identifier: str, spec: dict, target_plugin: str, plugins: li
     turn-in with gold reward, afterwards). spec keys: quest_editor_id, quest_name, item_editor_id,
     item_name, item_clone_from, placement {worldspace, grid_x, grid_y or cell, x, y, z, persistent},
     log {"10","20","30": journal text}, objectives {"10","20": text}, offer/reminder/turn_in/done
-    {prompt, lines}, reward_gold. Quest dialogue stays available while the NPC is a follower.
+    {prompt, lines}, reward_gold, stolen (default false). The item reference gets the player as owner so
+    taking it from an owned cell is not theft (stolen: true keeps the cell owner), and the QuestItem alias
+    carries the Quest Object flag so the item cannot be dropped. Quest dialogue stays available while the
+    NPC is a follower.
     Run package_plugin afterwards.
     """
     try:
@@ -1485,6 +1488,75 @@ def build_lore_db(source: str, file: str | None = None, namespaces: list[str] | 
         else:
             raise ValueError("source must be 'game-books', 'uesp-dump' or 'vectors'")
         return {"source": source, "chunks": n, **db.status(con)}
+    return _guarded(run)
+
+
+@mcp.tool()
+def api_search(query: str, limit: int = 8, source: str | None = None, mode: str = "auto") -> list[dict] | dict:
+    """Search the local Papyrus API database (separate from lore) for script functions, events, properties,
+    actor values and Creation Kit wiki notes. Use it BEFORE writing Papyrus to confirm a hook or function
+    really exists. Prefer api_get for an exact script or member name; use this for intent ('detect a sale',
+    'restore health over time'). source: 'psc' (signatures), 'actor-values' or 'ckwiki'. mode as in
+    lore_search. Members marked [SKSE] need the Script Extender (see detect_skse). If no database exists
+    the error says how to build one (`python -m tools.papyrus_api build ...`)."""
+    from tools.papyrus_api import api
+    return _guarded(lambda: api.search(api.connect(), query, max(1, min(limit, 50)), source, mode))
+
+
+@mcp.tool()
+def api_get(script: str, member: str | None = None) -> dict:
+    """Exact Papyrus API lookup from the local API database. api_get('Actor') returns the script header,
+    its extends chain and its own functions/events/properties with signatures. api_get('Actor', 'OnHit')
+    finds that member on the script or the nearest parent that declares it (e.g. 'DamageActorValue' on Actor,
+    'RegisterForSingleUpdate' on Form) with its exact signature. An empty result means the member does
+    not exist, except non-native events such as OnInit, which are not indexed (check those with
+    check_script). skse=true means it needs SKSE."""
+    from tools.papyrus_api import api
+
+    def run():
+        con = api.connect()
+        out = api.get_script(con, script, member)
+        if out is None:
+            return {"error": f"no script {script!r}", "similar": api.suggest(con, script)}
+        if member and not out['members']:
+            out["similar"] = api.suggest(con, member)
+        return out
+    return _guarded(run)
+
+
+@mcp.tool()
+def api_status() -> dict:
+    """Show which Papyrus API sources are indexed (scripts, actor values, CK wiki) with license and size."""
+    from tools.papyrus_api import api
+    return _guarded(lambda: api.status(api.connect()))
+
+
+@mcp.tool()
+def build_api_db(source: str, file: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Build or refresh one source of the local Papyrus API database (replaces that source's rows).
+    source 'scripts': index the .psc sources (CK sources extracted for the compiler, plus SKSE sources when
+    found); rerun after installing SKSE or changing its version. source 'actor-values': index ActorValueInfo
+    records of the loaded plugins (defaults to Skyrim.esm). source 'ckwiki-dump': import a Creation Kit wiki
+    XML export given as file. source 'vectors': embed chunks for semantic search (needs fastembed)."""
+    from tools.papyrus_api import api
+    from tools.papyrus_api.cli import default_script_dirs
+    from tools.knowledge import vectors
+
+    def run():
+        con = api.connect(create=True)
+        if source == 'scripts':
+            n = api.index_scripts(con, default_script_dirs())
+        elif source == 'actor-values':
+            n = api.index_actor_values(con, get_model(plugins))
+        elif source == 'ckwiki-dump':
+            if not file:
+                raise ValueError("ckwiki-dump needs file")
+            n = api.import_ckwiki_dump(con, file)
+        elif source == 'vectors':
+            n = vectors.build(con)
+        else:
+            raise ValueError("source must be 'scripts', 'actor-values', 'ckwiki-dump' or 'vectors'")
+        return {"source": source, "chunks": n, **api.status(con)}
     return _guarded(run)
 
 

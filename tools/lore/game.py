@@ -1,8 +1,8 @@
 """Index the player-visible text of the user's own Skyrim install (books) as the 'game' lore source."""
 from tools.books.books import book_text
+from tools.knowledge.wikitext import _split_words, clean
 
 from .db import Writer
-from .wikitext import _split_words, clean
 
 SOURCE = "game"
 LICENSE = "user's own game data"
