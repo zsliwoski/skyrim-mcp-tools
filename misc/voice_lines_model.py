@@ -28,20 +28,50 @@ class Line:
     stem: str = ''  # voice file name without extension
     plugin_dir: str = ''  # Sound\Voice\<this> folder name (the plugin that owns the INFO)
     audio: Path | None = None  # the file found, or None
+    emotion: int = 0
+    emotion_value: int = 50
+    use_emotion_anim: bool = False
+    speaker_idle: int = 0  # absolute form ID of the speaker's body animation (IDLE), 0 for none
+    listener_idle: int = 0
+    editable: bool = False  # the INFO is defined in the loaded plugin
+    index: int = 0  # position of the response within its INFO
     npcs: list = field(default_factory=list)  # absolute form IDs of the speaking NPCs
     bsa: tuple | None = None  # (bsa path, internal path) when the audio is inside an archive
 
 
+EMOTIONS = ['Neutral', 'Anger', 'Disgust', 'Fear', 'Sad', 'Happy', 'Surprise', 'Puzzled']
+
+
+def response_groups(subrecords):
+    """[[subrecord, ...]] one list per response: a TRDT and the subrecords that follow it up to the next TRDT."""
+    groups = []
+    for sr in subrecords:
+        if sr.signature == 'TRDT':
+            groups.append([])
+        if groups and sr.signature in ('TRDT', 'NAM1', 'NAM2', 'NAM3', 'NAM4', 'SNAM', 'LNAM'):
+            groups[-1].append(sr)
+    return groups
+
+
 def response_numbers(info):
-    """[(response number, text subrecord data)] for an INFO, pairing each TRDT with the NAM1 that follows it."""
-    out, num = [], 1
-    for sr in info.subrecords:
-        if sr.signature == 'TRDT' and len(sr.data) > 12:
-            num = sr.data[12]
-        elif sr.signature == 'NAM1':
-            out.append((num, sr.data))
-            num += 1
+    """[(response number, text subrecord data, group)] for an INFO's responses."""
+    out = []
+    for n, group in enumerate(response_groups(info.subrecords), 1):
+        trdt = group[0].data
+        nam1 = next((s for s in group if s.signature == 'NAM1'), None)
+        if nam1 is not None:
+            out.append((trdt[12] if len(trdt) > 12 else n, nam1.data, group))
     return out
+
+
+def response_fields(model, info, group):
+    """Emotion, body animation and flags of one response, with idle form IDs made absolute."""
+    trdt = bytes(group[0].data).ljust(24, b'\0')
+    idle = {s.signature: model.absid(info.plugin, u32(s.data)) for s in group
+            if s.signature in ('SNAM', 'LNAM') and len(s.data) == 4}
+    return {'emotion': struct.unpack_from('<I', trdt, 0)[0], 'emotion_value': struct.unpack_from('<I', trdt, 4)[0],
+            'use_emotion_anim': bool(trdt[20]), 'speaker_idle': idle.get('SNAM', 0),
+            'listener_idle': idle.get('LNAM', 0)}
 
 
 def name_of(model, fid):
@@ -114,9 +144,9 @@ def owner_name(info):
     return masters[idx] if idx < len(masters) else info.plugin.file_path.name
 
 
-def load_lines(plugin_path, progress=lambda s: None, model=None):
+def load_lines(plugin_path, progress=lambda s: None, model=None, master_dirs=()):
     """(Model, [Line]) for every spoken line in the plugin's own INFO records."""
-    model = model or Model([plugin_path], progress, resolve_refs=False)
+    model = model or Model([plugin_path], progress, resolve_refs=False, master_dirs=master_dirs)
     target = Path(plugin_path).name.lower()
     quest_alias = {}
     rows = []
@@ -133,11 +163,83 @@ def load_lines(plugin_path, progress=lambda s: None, model=None):
                     continue
                 who, voices, npcs = speakers(model, info, dial, qrec, quest_alias[qfid])
                 owner = owner_name(info)
-                for num, data in response_numbers(info):
+                for index, (num, data, group) in enumerate(response_numbers(info)):
                     text = model.string(data, info) or ''
                     rows.append(Line(info, qname, topic, prompt, num, text, who, list(voices),
-                                     voice_stem(qname, topic, info.form_id.value, num), owner, npcs=npcs))
+                                     voice_stem(qname, topic, info.form_id.value, num), owner, npcs=npcs,
+                                     editable=True, index=index, **response_fields(model, info, group)))
     return model, rows
+
+
+def all_idles(model):
+    """{editor ID: absolute form ID} of every loaded IDLE (body animation) record."""
+    return {r.editor_id: fid for fid, r in model.by_sig['IDLE'].items() if r.editor_id}
+
+
+def local_form_id(model, plugin, fid):
+    """Absolute form ID -> form ID as stored in `plugin`; the defining plugin must already be a master."""
+    if not fid:
+        return 0
+    rec = model.get(fid)
+    if rec is None:
+        raise ValueError(f"form {fid:08X} is not loaded")
+    owner = owner_name(rec).lower()
+    masters = [m.lower() for m in plugin.header.masters]
+    if owner == plugin.file_path.name.lower():
+        return (len(masters) << 24) | (fid & 0xFFFFFF)
+    if owner not in masters:
+        raise ValueError(f"{rec.editor_id or hex(fid)} comes from {owner_name(rec)}, which is not a master of "
+                         f"{plugin.file_path.name}")
+    return (masters.index(owner) << 24) | (fid & 0xFFFFFF)
+
+
+def edit_response(model, plugin_path, line, text, emotion, emotion_value, use_emotion_anim, speaker_idle, listener_idle):
+    """Rewrite one response of an INFO owned by the plugin: its text, emotion (type and value), emotion animation flag and
+    speaker/listener body animations (absolute IDLE form IDs, 0 for none). A snapshot is taken first."""
+    from esplib import Plugin
+    from esplib.record import Record
+    from tools.records.maintenance import all_records, snapshot
+
+    plugin = Plugin.load(str(plugin_path))
+    if getattr(plugin, 'is_localized', False):
+        raise ValueError("this plugin uses string tables; edit the text in the Creation Kit or xEdit")
+    own = len(plugin.header.masters)
+    target = next((r for r in all_records(plugin) if r.signature == 'INFO'
+                   and r.form_id.value == line.info.form_id.value), None)
+    groups = response_groups(target.subrecords) if target is not None else []
+    if not line.editable or target is None or line.index >= len(groups):
+        raise ValueError("this line's INFO is not defined in the plugin; only its own lines can be edited")
+    if not 0 <= emotion < len(EMOTIONS) or not 0 <= emotion_value <= 100:
+        raise ValueError("emotion must be one of the listed types and its value 0-100")
+    ids = {'SNAM': local_form_id(model, plugin, speaker_idle), 'LNAM': local_form_id(model, plugin, listener_idle)}
+    snapshot(plugin_path, 'pre_dialogue_edit')
+
+    group = groups[line.index]
+    trdt = bytearray(bytes(group[0].data).ljust(24, b'\0'))
+    struct.pack_into('<II', trdt, 0, emotion, emotion_value)
+    trdt[20] = 1 if use_emotion_anim else 0
+    group[0].data = bytearray(trdt)
+    group[0].modified = True
+    nam1 = next(s for s in group if s.signature == 'NAM1')
+    nam1.data = bytearray(text.encode('cp1252', 'replace') + b'\0')
+    nam1.modified = True
+    for sig in ('SNAM', 'LNAM'):
+        existing = next((s for s in group if s.signature == sig and len(s.data) == 4), None)
+        if existing is not None and ids[sig]:
+            existing.data = bytearray(struct.pack('<I', ids[sig]))
+            existing.modified = True
+        elif existing is not None:
+            target.subrecords.remove(existing)
+            group.remove(existing)
+        elif ids[sig]:
+            keep = ('NAM1', 'NAM2', 'NAM3', 'NAM4', 'SNAM')
+            pos = max(target.subrecords.index(s) for s in group if s.signature in keep) + 1
+            target.insert_subrecord(pos, sig, struct.pack('<I', ids[sig]))
+            group[:] = response_groups(target.subrecords)[line.index]
+    target.modified = True
+    plugin.save(str(plugin_path))
+    line.text, line.emotion, line.emotion_value = text, emotion, emotion_value
+    line.use_emotion_anim, line.speaker_idle, line.listener_idle = use_emotion_anim, speaker_idle, listener_idle
 
 
 def all_voice_types(model):
@@ -281,7 +383,7 @@ def create_voice_type(plugin_path, editor_id, female=False, allow_default=True):
 
 
 def assign_voice_type(plugin_path, npc_form_ids, vtyp_form_id):
-    """Point the plugin's own NPCs at a voice type (VTCK male and female). Returns the NPC editor IDs changed."""
+    """Point the plugin's own NPCs at a voice type (NPC_ VTCK is a single 4-byte form ID). Returns the NPC editor IDs changed."""
     import struct
     from esplib import Plugin
     from tools.npcs.npc_builder import NPC_RANK, NPC_ORDER
@@ -291,7 +393,7 @@ def assign_voice_type(plugin_path, npc_form_ids, vtyp_form_id):
     for rec in plugin.records:
         if rec.signature != 'NPC_' or rec.form_id.value not in npc_form_ids:
             continue
-        data = struct.pack('<II', vtyp_form_id, vtyp_form_id)
+        data = struct.pack('<I', vtyp_form_id)
         sr = rec.get_subrecord('VTCK')
         if sr is not None:
             sr.data = bytearray(data)
@@ -302,6 +404,8 @@ def assign_voice_type(plugin_path, npc_form_ids, vtyp_form_id):
         rec.modified = True
         changed.append(rec.editor_id or f"{rec.form_id.value:08X}")
     if changed:
+        from tools.records.maintenance import snapshot
+        snapshot(plugin_path, 'pre_voice_assign')
         plugin.save(str(plugin_path))
     return changed
 
@@ -420,14 +524,18 @@ class Recorder:
             raise
 
     def stop(self, dest):
-        """Stop and save to dest (parent folders created)."""
+        """Stop and save to dest (parent folders created). MCI rejects long paths, so it saves to a short temp file first."""
+        import shutil
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.gettempdir()) / 'vlrec.wav'
+        tmp.unlink(missing_ok=True)
         try:
             self.send(f'stop {self.alias}')
-            self.send(f'save {self.alias} "{dest}" wait')
+            self.send(f'save {self.alias} "{tmp}" wait')
         finally:
             self.cancel()
+        shutil.move(str(tmp), str(dest))
 
     def cancel(self):
         if self.active:

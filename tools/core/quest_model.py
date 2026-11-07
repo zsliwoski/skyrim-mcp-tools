@@ -15,7 +15,7 @@ LOAD_SIGS = {
     'QUST', 'DIAL', 'SCEN', 'NPC_', 'LCTN', 'FACT', 'PACK',
     'STAT', 'MSTT', 'DOOR', 'FURN', 'LIGH', 'CONT', 'MISC', 'WEAP', 'ARMO',
     'ACTI', 'ALCH', 'BOOK', 'FLOR', 'TREE', 'INGR', 'KEYM', 'AMMO', 'SCRL',
-    'SLGM', 'APPA', 'SOUN', 'TACT', 'SPEL', 'HAZD', 'IDLM', 'ARTO',
+    'SLGM', 'APPA', 'SOUN', 'TACT', 'SPEL', 'HAZD', 'IDLM', 'IDLE', 'ARTO',
     'RACE', 'CLAS', 'VTYP', 'PERK', 'KYWD', 'OTFT', 'CLFM', 'CSTY', 'LVLI', 'LVLN', 'LVSP', 'SHOU', 'FLST',
     'HDPT', 'ENCH', 'MGEF', 'GLOB', 'MESG', 'EQUP', 'ARMA', 'EFSH', 'AVIF',
 }
@@ -124,7 +124,7 @@ class Model:
     form IDs are 'absolute': (position in self.plugins << 24) | object id.
     Later plugins override earlier ones."""
 
-    def __init__(self, paths, progress, resolve_refs=True):
+    def __init__(self, paths, progress, resolve_refs=True, master_dirs=()):
         self.paths = [Path(p) for p in paths]
         self.plugins, self.slots, loaded = [], {}, set()
 
@@ -136,8 +136,8 @@ class Model:
             progress(f"Loading {path.name} (first run is slow, then cached)...")
             pl = Plugin.load_cached(str(path), only_signatures=LOAD_SIGS)
             for master in pl.header.masters:
-                mp = path.parent / master
-                if mp.exists():
+                mp = next((d / master for d in (path.parent, *map(Path, master_dirs)) if (d / master).exists()), None)
+                if mp is not None:
                     load(mp)
             self.slots[path.name.lower()] = len(self.plugins)
             self.plugins.append(pl)

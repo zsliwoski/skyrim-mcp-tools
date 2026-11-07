@@ -130,6 +130,8 @@ def test_create_voice_type_and_assign_to_npc(plugin_path):
         vl.create_voice_type(plugin_path, "bad id!")
 
     assert vl.assign_voice_type(plugin_path, {0x800}, made["form_id"]) == ["VoiceTestNpc"]
+    npc = next(r for r in Plugin.load(str(plugin_path)).records if r.signature == "NPC_")
+    assert bytes(npc.get_subrecord("VTCK").data) == struct.pack("<I", made["form_id"])  # one form ID, not male/female
     assert vl.load_lines(plugin_path)[1][0].voice_types == ["VoiceTestVoice"]
     model, _ = vl.load_lines(plugin_path)
     assert "VoiceTestVoice" in vl.all_voice_types(model)
@@ -235,3 +237,41 @@ def test_package_plugin_ships_voice_files(plugin_path):
     assert f"Sound/Voice/Voice.esp/MaleNord/{ln.stem}.wav" in names
     with zipfile.ZipFile(plugin_path.parent / "packages" / "Voice.zip") as z_:
         assert f"Sound/Voice/Voice.esp/MaleNord/{ln.stem}.wav" in z_.namelist()
+
+
+def test_edit_response_changes_text_emotion_and_idles(plugin_path):
+    model, lines = vl.load_lines(plugin_path)
+    ln = lines[1]
+    vl.edit_response(model, plugin_path, ln, "New words.", 5, 80, True, 0, 0)
+    again = vl.load_lines(plugin_path)[1][1]
+    assert (again.text, again.emotion, again.emotion_value, again.use_emotion_anim) == ("New words.", 5, 80, True)
+    assert again.index == 1 and vl.load_lines(plugin_path)[1][0].text != "New words."
+
+
+def test_edit_response_sets_and_clears_idle_animation(plugin_path):
+    plugin = Plugin.load(str(plugin_path))
+    idle = Record("IDLE", FormID(0x830), 0)
+    idle.add_subrecord("EDID", z("TestIdle"))
+    plugin.add_record(idle)
+    plugin.save(str(plugin_path))
+    model, lines = vl.load_lines(plugin_path)
+    assert vl.all_idles(model) == {"TestIdle": 0x830}
+    ln = lines[0]
+    vl.edit_response(model, plugin_path, ln, ln.text, 0, 50, False, 0x830, 0x830)
+    again = vl.load_lines(plugin_path)[1][0]
+    assert (again.speaker_idle, again.listener_idle) == (0x830, 0x830)
+    first = list(Plugin.load(str(plugin_path)).get_records_by_signature("INFO"))[0]
+    sigs = [s.signature for s in first.subrecords]
+    second = sigs.index("TRDT", 1)
+    assert sigs.index("NAM1") < sigs.index("SNAM") < second and sigs.index("NAM1") < sigs.index("LNAM") < second
+    vl.edit_response(model, plugin_path, again, again.text, 0, 50, False, 0, 0)
+    again = vl.load_lines(plugin_path)[1][0]
+    assert (again.speaker_idle, again.listener_idle) == (0, 0)
+
+
+def test_edit_response_rejects_bad_emotion_and_takes_snapshot(plugin_path):
+    model, lines = vl.load_lines(plugin_path)
+    with pytest.raises(ValueError):
+        vl.edit_response(model, plugin_path, lines[0], "x", 99, 50, False, 0, 0)
+    vl.edit_response(model, plugin_path, lines[0], "x", 1, 50, False, 0, 0)
+    assert list(plugin_path.parent.rglob("*pre_dialogue_edit*"))

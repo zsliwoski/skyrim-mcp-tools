@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from voice_lines_model import (Recorder, all_voice_types, assign_voice_type, bsa_index, convert_to_fuz, create_voice_type, find_audio,
+from voice_lines_model import (EMOTIONS, Recorder, all_idles, edit_response, all_voice_types, assign_voice_type, bsa_index, convert_to_fuz, create_voice_type, find_audio,
                                find_voice_tools,
                                import_audio, line_wav_path, load_lines, playable_wav)
 from tools.core.plugin_edit import package_plugin
@@ -80,6 +80,28 @@ class App(tk.Tk):
         panel.pack(fill='x', side='bottom', padx=6, pady=6)
         self.detail = tk.Text(panel, height=4, wrap='word')
         self.detail.pack(fill='x', pady=(0, 4))
+        ed = ttk.LabelFrame(panel, text="Edit response")
+        ed.pack(fill='x', pady=(0, 4))
+        self.edit_text = tk.Text(ed, height=3, wrap='word')
+        self.edit_text.pack(fill='x', padx=4, pady=4)
+        er = ttk.Frame(ed)
+        er.pack(fill='x', padx=4, pady=(0, 4))
+        self.emotion = tk.StringVar()
+        self.emo_value = tk.IntVar(value=50)
+        self.emo_anim = tk.BooleanVar()
+        self.spk_idle = tk.StringVar()
+        self.lis_idle = tk.StringVar()
+        ttk.Label(er, text="Emotion:").pack(side='left')
+        ttk.Combobox(er, textvariable=self.emotion, values=EMOTIONS, width=10, state='readonly').pack(side='left', padx=4)
+        ttk.Spinbox(er, from_=0, to=100, textvariable=self.emo_value, width=5).pack(side='left')
+        ttk.Checkbutton(er, text="Use emotion animation", variable=self.emo_anim).pack(side='left', padx=8)
+        ttk.Label(er, text="Speaker animation:").pack(side='left')
+        self.spk_box = ttk.Combobox(er, textvariable=self.spk_idle, width=24)
+        self.spk_box.pack(side='left', padx=4)
+        ttk.Label(er, text="Listener:").pack(side='left')
+        self.lis_box = ttk.Combobox(er, textvariable=self.lis_idle, width=24)
+        self.lis_box.pack(side='left', padx=4)
+        ttk.Button(er, text="Apply", command=self.apply_edit).pack(side='left', padx=4)
         row = ttk.Frame(panel)
         row.pack(fill='x')
         ttk.Label(row, text="Voice type:").pack(side='left')
@@ -109,7 +131,8 @@ class App(tk.Tk):
 
         def work():
             try:
-                model, lines = load_lines(self.plugin, lambda s: self.calls.put(lambda: self.status.config(text=s)))
+                model, lines = load_lines(self.plugin, lambda s: self.calls.put(lambda: self.status.config(text=s)),
+                                           master_dirs=[DATA_DIR])
                 dirs = [DATA_DIR, self.plugin.parent] if DATA_DIR.is_dir() else [self.plugin.parent]
                 bsas = bsa_index(dirs, self.plugin.name)
                 for ln in lines:
@@ -123,6 +146,10 @@ class App(tk.Tk):
         self.model, self.lines, self.bsas = model, lines, bsas
         self.vtypes = all_voice_types(model)
         self.voice_box['values'] = self.vtypes
+        self.idles = all_idles(model)
+        self.idle_names = {v: k for k, v in self.idles.items()}
+        names = [''] + sorted(self.idles, key=str.lower)
+        self.spk_box['values'] = self.lis_box['values'] = names
         if self.pending_voice:
             self.voice.set(self.pending_voice)
             self.pending_voice = None
@@ -166,6 +193,38 @@ class App(tk.Tk):
         where = ln.audio or (f"{ln.bsa[0]} :: {ln.bsa[1]}" if ln.bsa else 'no audio')
         prompt = f"Player prompt: {ln.prompt}\n" if ln.prompt else ''
         self.detail.insert('1.0', f"{ln.speaker}: {ln.text}\n{prompt}File: {ln.stem}  ({where})")
+        self.edit_text.delete('1.0', 'end')
+        self.edit_text.insert('1.0', ln.text)
+        self.emotion.set(EMOTIONS[ln.emotion] if ln.emotion < len(EMOTIONS) else EMOTIONS[0])
+        self.emo_value.set(ln.emotion_value)
+        self.emo_anim.set(ln.use_emotion_anim)
+        names = getattr(self, 'idle_names', {})
+        self.spk_idle.set(names.get(ln.speaker_idle, ''))
+        self.lis_idle.set(names.get(ln.listener_idle, ''))
+
+    def apply_edit(self):
+        ln = self.current()
+        if ln is None:
+            return
+        text = self.edit_text.get('1.0', 'end').strip()
+        if not text:
+            messagebox.showerror("Edit", "The response text can't be empty.")
+            return
+        if text != ln.text and self.has_audio(ln) and not messagebox.askyesno(
+                "Edit", "This line has audio. Changing the text leaves the voice and lip sync saying the old words "
+                        "until you re-record or re-convert it.\n\nApply anyway?"):
+            return
+        try:
+            idles = [self.idles.get(v.get().strip(), 0) if v.get().strip() else 0 for v in (self.spk_idle, self.lis_idle)]
+            if any(v.get().strip() and not i for v, i in zip((self.spk_idle, self.lis_idle), idles)):
+                raise ValueError("unknown animation name; pick one from the list or leave it blank")
+            edit_response(self.model, self.plugin, ln, text, EMOTIONS.index(self.emotion.get()),
+                          int(self.emo_value.get()), self.emo_anim.get(), *idles)
+        except Exception as e:
+            messagebox.showerror("Edit failed", str(e))
+            return
+        self.refresh(ln)
+        self.status.config(text="Saved (snapshot 'pre_dialogue_edit' taken first)")
 
     def on_voice(self):
         ln = self.current()
@@ -180,6 +239,7 @@ class App(tk.Tk):
         if self.tree.exists(iid):
             self.tree.set(iid, 'audio', 'yes' if self.has_audio(ln) else 'MISSING')
             self.tree.set(iid, 'voice', ', '.join(ln.voice_types))
+            self.tree.set(iid, 'text', ln.text)
         self.on_select()
 
     def play(self):

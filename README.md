@@ -201,6 +201,11 @@ python misc/voice_lines_gui.py path\to\Plugin.esp
   (the WAV is then removed), so the line lip-syncs in game. A loose WAV also plays in Skyrim SE but with a still face.
 - **New voice type...** adds a VTYP record to the plugin (after a snapshot) and can assign it to the line's speaker
   NPCs that are defined in the plugin.
+- **Edit response** (for lines whose INFO is defined in the plugin) changes the line text, emotion type and value,
+  the "use emotion animation" flag, and the speaker/listener body animations (any loaded `IDLE`, e.g. `IdlePray`).
+  Apply snapshots the plugin first (`pre_dialogue_edit`). Changing text doesn't change the audio, so re-record or
+  re-convert the line. Localized plugins (string tables) can't be text-edited, and an animation must come from the
+  plugin itself or one of its masters.
 - **Pack zip** runs `package_plugin`; **Install to Data** copies the plugin and its files into Data.
 
 Voice files are written to `<plugin folder>\Sound\Voice\<Plugin.esp>\<voice type>\<quest>_<topic>_<info id>_<n>`
