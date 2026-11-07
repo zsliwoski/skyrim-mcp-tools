@@ -222,6 +222,36 @@ Requirements:
 - A voice type must be chosen for each line before recording or uploading, because the folder is named after it.
   Create one with **New voice type...** if the NPC has none.
 
+### Mesh & texture duplicator (`misc/assets_gui.py`)
+A Tkinter app for giving a record its own copy of a model and its textures:
+
+```powershell
+python misc/assets_gui.py path\to\Plugin.esp
+```
+
+- Lists the plugin's own records that use a mesh (`MODL`/`MOD2`-`MOD5`) or are texture sets (`TXST`); tick
+  "Include master records" and type 3+ filter characters to find vanilla ones. Meshes and textures are read from loose
+  files (plugin folder, then Data) and from BSAs.
+- Selecting a record previews the mesh textured with its diffuse maps (UV-mapped; untick to see plain shading, drag to
+  rotate) and lists the textures its NIF names; selecting a texture previews it. Skinned armor is previewed too. DDS
+  formats Pillow can't decode show "Can't preview" and render grey.
+- **Duplicate...** copies the NIF to `Meshes\<folder>\`, every texture it names to `Textures\<folder>\`, and rewrites
+  the texture paths inside the copied NIF. Then, your choice: **clone** the record under a new editor ID (works for
+  master records too), **repoint** the record itself (for a master's record this adds an override), or **files only**,
+  which leaves every record alone. TXST records get their `TX00`-`TX07` paths repointed. A snapshot is taken first
+  (not for files only) and the stale `MODT` hash subrecords are dropped.
+- **Pack zip** / `package_plugin` include the loose meshes and textures the plugin's records use (model paths, texture
+  sets, and textures named inside those meshes), not just FaceGen files.
+- **Replace texture...** overwrites a texture in the plugin's own `Textures` folder with another `.dds`.
+- **Mesh structure...** shows the NIF's node/shape hierarchy with each shape's shader and textures. Unrigged
+  `BSTriShape`s can be exported to `.obj` (one shape or all) and a shape can be replaced from an `.obj`; the shape keeps
+  its shader, textures and vertex format, and normals/tangents are rebuilt. Rigged (skinned) shapes are skipped. Import
+  edits the mesh in the plugin's own `Meshes` folder, so duplicate it first.
+- **Use another model...** / **First-person model...** repoint a record at one of your copies, or give a weapon its own
+  first-person model. They also detach a weapon/armor's template record (`CNAM`/`TNAM`), whose model would otherwise win.
+- Only `BSShaderTextureSet` paths are rewritten; effect-shader textures (`BSEffectShaderProperty`) and alternate
+  texture records (`MODS`) still point at the originals. Needs Pillow and numpy (in requirements.txt).
+
 ## Project layout
 
 - [server.py](server.py) – MCP tool definitions

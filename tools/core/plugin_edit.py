@@ -74,6 +74,37 @@ def vmad_script_names(plugin):
     return names
 
 
+def referenced_assets(path):
+    """Loose meshes and textures next to the plugin that its records use: model paths (MODL, MOD2-MOD5), texture-set
+    paths (TX00-TX07) and the textures named inside those meshes."""
+    from tools.core import nif_tools
+    path = Path(path)
+    base = path.parent
+    out = {}
+
+    def add(f):
+        if f.is_file():
+            out[f.resolve()] = f
+        return f.is_file()
+
+    def text(sub):
+        return bytes(sub.data).split(b'\0')[0].decode('cp1252', 'replace').replace('\\', '/').lstrip('/')
+
+    for rec in Plugin.load(str(path)).records:
+        for sub in rec.subrecords:
+            if sub.signature in ('MODL', 'MOD2', 'MOD3', 'MOD4', 'MOD5') and text(sub).lower().endswith('.nif'):
+                mesh = base / 'Meshes' / text(sub)
+                if add(mesh):
+                    try:
+                        for tex in nif_tools.texture_paths(nif_tools.parse(mesh.read_bytes())):
+                            add(base / tex.replace('\\', '/'))
+                    except nif_tools.NifError:
+                        pass
+            elif rec.signature == 'TXST' and sub.signature.startswith('TX0') and sub.data:
+                add(base / 'Textures' / text(sub))
+    return list(out.values())
+
+
 def plugin_files(path, regen_seq=True):
     """The plugin plus every loose file it needs (FaceGen, voice lines, scripts, regenerated SEQ), as absolute paths."""
     path = Path(path)
@@ -85,6 +116,8 @@ def plugin_files(path, regen_seq=True):
             files += [f for f in root.rglob('*')
                       if f.is_file() and f.suffix.lower() != '.bak'
                       and path.name.lower() in (p.lower() for p in f.relative_to(base).parts)]
+    seen = {f.resolve() for f in files}
+    files += [f for f in referenced_assets(path) if f.resolve() not in seen]
     stem = re.sub(r'[^A-Za-z0-9]', '', path.stem)[:16]
     scripts = {}
     for pattern in (f"TIF__{stem}_*.pex", f"QF__{stem}_*.pex", f"{stem}_*.pex"):
