@@ -37,6 +37,7 @@ Register it in your MCP client as a stdio server running `python server.py` from
 | `SKYRIM_CK_DIR` | `C:\Program Files (x86)\Steam\steamapps\common\Skyrim` | Creation Kit install folder (Papyrus compiler and `Data\Scripts.rar`) |
 | `SKYRIM_PAPYRUS_SOURCES` | `.\papyrus_src` | Cache of vanilla Papyrus sources used when compiling |
 | `SKYRIM_SKSE_SOURCES` | (none) | Extra folders of SKSE `.psc` sources (`Data\Scripts\Source` is checked automatically) |
+| `SKYRIM_TOOLS_DIR` | `Tools` next to `Data` | Skyrim SE `Tools` folder (voice editor `.fuz` conversion) |
 | `SKYRIM_LORE_DB` | `.\lore_db\lore.db` | Local lore database (see [Lore database](#lore-database-optional-built-locally)) |
 | `SKYRIM_API_DB` | `.\api_db\api.db` | Local Papyrus API database (see [Papyrus API database](#papyrus-api-database-optional-built-locally-separate-from-lore)) |
 
@@ -183,6 +184,39 @@ embeddings).
   "both" for zip plus install; can remove stale loose copies) and
   `package_plugin` (zip); `install_plugin` and `package_plugin` also take a list of plugins
 
+### Voice line editor (`misc/voice_lines_gui.py`)
+A Tkinter app for the voiced side of a plugin. Run it from the repo root:
+
+```powershell
+python misc/voice_lines_gui.py path\to\Plugin.esp
+```
+
+- Lists every spoken dialogue line in the plugin with quest, topic, speaker, voice type and whether audio exists,
+  with a text filter and a "Missing audio only" toggle. Audio is found as loose files (output folder, then Data)
+  and inside BSAs (the plugin's own archive and any `*voices*` archive in Data).
+- **Play** plays `.wav` directly and decodes `.fuz`/`.xwm` (including from BSAs) through ffmpeg.
+- **Record** captures the microphone to a 16-bit mono 44.1 kHz WAV; **Upload audio...** copies in a `.wav`, `.fuz` or
+  `.xwm`, or converts `.mp3`/`.ogg`/`.flac`/`.m4a` to WAV.
+- **To .fuz** / **All WAVs to .fuz** generate lip sync from the line text, encode xWMA, and pack a `.fuz`
+  (the WAV is then removed), so the line lip-syncs in game. A loose WAV also plays in Skyrim SE but with a still face.
+- **New voice type...** adds a VTYP record to the plugin (after a snapshot) and can assign it to the line's speaker
+  NPCs that are defined in the plugin.
+- **Pack zip** runs `package_plugin`; **Install to Data** copies the plugin and its files into Data.
+
+Voice files are written to `<plugin folder>\Sound\Voice\<Plugin.esp>\<voice type>\<quest>_<topic>_<info id>_<n>`
+using the Creation Kit naming (quest cut to 10 characters, topic to 15, load-order byte of the info ID zeroed).
+`package_plugin`, `install_plugin` and `validate_plugin` include the `Sound` folder for the plugin.
+
+Requirements:
+- Windows (microphone recording uses the built-in MCI API; playback uses `winsound`), and Python's `tkinter`.
+- Skyrim SE `Data` folder (`SKYRIM_DATA_DIR`) for masters and existing audio.
+- ffmpeg on `PATH` for playing `.fuz`/`.xwm` and for converting non-WAV uploads. Plain WAV needs nothing extra.
+- For `.fuz` conversion: the Skyrim SE `Tools` folder next to `Data` (installed with the Creation Kit), containing
+  `Audio\xwmaencode.exe`, `LipGen\LipGenerator\LipGenerator.exe` (with `FonixData.cdf`) and
+  `LipGen\LipFuzer\LIPFuzer.exe`. Set `SKYRIM_TOOLS_DIR` if it lives elsewhere. Lip sync is generated for English.
+- A voice type must be chosen for each line before recording or uploading, because the folder is named after it.
+  Create one with **New voice type...** if the NPC has none.
+
 ## Project layout
 
 - [server.py](server.py) – MCP tool definitions
@@ -196,7 +230,7 @@ embeddings).
 - [esplib/](esplib) – bundled, modified plugin-parsing library (MPL 2.0)
 - [tests/](tests) – pytest suite
 - [.github/skills/](.github/skills) – assistant guidance for common Skyrim modding workflows
-- [misc/](misc) – standalone helper scripts (graph/tree viewers, reports)
+- [misc/](misc) – standalone helper scripts (graph/tree viewers, reports, the voice line editor)
 - `output/` – generated plugins and sample builds
 
 ## Testing

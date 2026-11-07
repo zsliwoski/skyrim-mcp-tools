@@ -75,11 +75,11 @@ def vmad_script_names(plugin):
 
 
 def plugin_files(path, regen_seq=True):
-    """The plugin plus every loose file it needs (FaceGen, scripts, regenerated SEQ), as absolute paths."""
+    """The plugin plus every loose file it needs (FaceGen, voice lines, scripts, regenerated SEQ), as absolute paths."""
     path = Path(path)
     base = path.parent
     files = [path]
-    for top in ('Meshes', 'Textures'):
+    for top in ('Meshes', 'Textures', 'Sound'):
         root = base / top
         if root.is_dir():
             files += [f for f in root.rglob('*')
