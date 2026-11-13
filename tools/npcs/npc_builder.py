@@ -76,18 +76,24 @@ FIELDS = {
               'for a new OTFT record.',
     'placement': 'Object: {"cell": id or name} or {"worldspace", "grid_x", "grid_y"}, plus x, y, z, '
                  'rotation_z (degrees), persistent (default true for interiors).',
-    'dialogue': 'List of topics: {"kind": "topic"|"greeting"|"goodbye", "prompt": player text, '
+    'dialogue': 'List of topics: {"kind": "topic"|"greeting"|"goodbye"|"agree"|"refuse"|"show", "prompt": player text, '
                 '"lines": [NPC lines spoken in sequence as one reply], or instead "answers": [[lines], [lines], ...] '
                 'for several alternative replies to the same prompt with "pick": "random" (default) or '
-                '"in_order" (each once, last repeats; answers cannot use give_items or code), optional "give_items": [item id or {"item", "count"}] given to the '
+                '"in_order" (each once, last repeats; give_items and code run after whichever answer plays), optional "give_items": [item id or {"item", "count"}] given to the '
                 'player when the line ends, optional "code": Papyrus statements run then, with '
                 '"properties": {name: form identifier} usable in the code as Form properties}. '
-                'Scripts are compiled with the Creation Kit compiler into the output Scripts folder.',
+                'Scripts are compiled with the Creation Kit compiler into the output Scripts folder. '
+                'Optional "blocking": true (prompt-less topic whose branch blocks other topics while its '
+                'conditions hold) and "child_of": index of an earlier topic entry (offered only after its reply).',
     'follower': 'Hirelable follower: {"cost": gold (default 50)} or true. Adds dialogue to hire the NPC for '
                 'that gold (using the vanilla follower quest), plus wait, follow and dismiss topics. '
                 'Dialogue entries also accept "conditions": [{"function": GetItemCount|GetInFaction|'
                 'GetGlobalValue|GetStage, "form": id, "op": ==|!=|>|>=|<|<=, "value": n, '
                 '"run_on": "subject"|"target"}] (target is the player).',
+    'combat_lines': 'true adds engine-spoken combat reactions (attack, hit grunts, taunts, flee, bleedout, '
+                    'death, combat/alert transitions) with several random lines each. Also available as '
+                    'dialogue kinds: attack, power_attack, bash, hit, flee, bleedout, death, block, taunt, '
+                    'normal_to_combat, normal_to_alert, alert_to_combat, combat_to_normal.',
     'quest_editor_id': 'Editor ID of the dialogue quest (default <editor_id>DialogueQuest).',
     'alias_name': 'Name of the quest alias that is filled with the NPC (default "Speaker").',
 }
@@ -115,20 +121,24 @@ NPC_RANK['ATKE'] = NPC_RANK['ATKD']
 
 GET_IS_ID = 72
 CONDITION_FUNCTIONS = {'GetItemCount': 47, 'GetStage': 58, 'GetInFaction': 71, 'GetGlobalValue': 74,
-                       'GetActorValue': 14}
+                       'GetActorValue': 14, 'IsDoingFavor': 635}
+NO_PARAM_FUNCTIONS = {'IsDoingFavor'}
 WAITING_FOR_PLAYER = 0x5F  # actor value the vanilla follower script sets to 1 on FollowerWait
 CONDITION_OPS = {'==': 0, '!=': 1, '>': 2, '>=': 3, '<': 4, '<=': 5}
 RUN_ON = {'subject': 0, 'target': 1}
 
 
-def follower_entries(cost):
-    """Dialogue entries that make an NPC a cheap hireling through the vanilla DialogueFollower quest."""
+def follower_entries(cost, base=0):
+    """Dialogue entries that make an NPC a cheap hireling through the vanilla DialogueFollower quest.
+    base is the index of the first returned entry in the NPC's dialogue list (for child_of links)."""
+    blocking = base + 7  # position of the blocking favor topic below
     hire = f"Would you travel with me? ({cost} gold)"
     props = {'FollowerQuest': 'DialogueFollower', 'HirelingFaction': 'CurrentHireling', 'Gold': 'Gold001'}
     hired = {'function': 'GetInFaction', 'form': 'CurrentHireling', 'op': '==', 'value': 1}
     free = dict(hired, value=0)
     waiting = lambda v: {'function': 'GetActorValue', 'actor_value': WAITING_FOR_PLAYER, 'op': '==', 'value': v}
     manager = "(FollowerQuest as Quest) as DialogueFollowerScript"
+    favor = lambda v: {'function': 'IsDoingFavor', 'op': '==', 'value': v}
     return [
         {'prompt': hire, 'lines': [f"For {cost} gold I'll watch your back. Lead the way!"],
          'properties': props, 'conditions': [free, {'function': 'GetItemCount', 'form': 'Gold001',
@@ -139,17 +149,65 @@ def follower_entries(cost):
         {'prompt': hire, 'lines': [f"I'd love to, but a man's got to eat. {cost} gold and I'm yours."],
          'conditions': [free, {'function': 'GetItemCount', 'form': 'Gold001', 'op': '<',
                                'value': cost, 'run_on': 'target'}]},
-        {'prompt': "Wait here.", 'lines': ["I'll be right here."], 'properties': props,
+        {'prompt': "Wait here.", 'lines': ["I'll be right here."], 'properties': props, 'goodbye': True,
          'conditions': [hired, waiting(0)], 'code': f"({manager}).FollowerWait()"},
-        {'prompt': "Follow me.", 'lines': ["Right behind you."], 'properties': props,
+        {'prompt': "Follow me.", 'lines': ["Right behind you."], 'properties': props, 'goodbye': True,
          'conditions': [hired, waiting(1)], 'code': f"({manager}).FollowerFollow()"},
         {'prompt': "I don't need you anymore.", 'lines': ["Understood. It was a pleasure."],
-         'properties': props, 'conditions': [hired],
+         'properties': props, 'conditions': [hired], 'goodbye': True,
          'code': f"({manager}).DismissFollower(0, 0)"},
+        {'prompt': "Trade some items.", 'lines': ["Sure, let's see what you've got."],
+         'conditions': [hired], 'code': "akSpeaker.OpenInventory(true)"},
+        # vanilla favor flow (these INFOs end the conversation): start a favor; while it is active a
+        # blocking topic offers continue or end
+        {'prompt': "I need you to do something.", 'lines': ["What do you need?"], 'goodbye': True,
+         'conditions': [hired, favor(0)], 'code': "akSpeaker.SetDoingFavor(true)"},
+        {'blocking': True, 'lines': ["Still need me to do something?"], 'conditions': [hired, favor(1)]},
+        {'prompt': "Yes. Let me show you.", 'child_of': blocking, 'goodbye': True,
+         'answers': [["Let's see it."], ["Point the way."], ["Let us see it, then."], ["Right, then."]]},
+        {'prompt': "No. Never mind.", 'child_of': blocking, 'goodbye': True,
+         'code': "akSpeaker.SetDoingFavor(false)",
+         'answers': [["All right."], ["As you wish."], ["Very well."], ["Fine."], ["Your call."]]},
+        # engine-spoken reactions while doing a favor: accepting, refusing and showing a target
+        {'kind': 'agree', 'conditions': [hired], 'answers': [["Got it."], ["Right."], ["On it."]]},
+        {'kind': 'refuse', 'conditions': [hired], 'answers': [["I can't do that."], ["Not going to happen."]]},
+        {'kind': 'show', 'conditions': [hired], 'answers': [["Here, take a look."], ["Found something."]]},
     ]
 SUBTYPES = {'topic': (b'CUST', b'\x00\x00\x00\x00'), 'greeting': (b'HELO', b'\x00\x07\x49\x00'),
-            'goodbye': (b'GBYE', b'\x00\x07\x48\x00')}
+            'goodbye': (b'GBYE', b'\x00\x07\x48\x00'),
+            # spoken by the engine when a follower is given a favor target (vanilla DialogueFollower subtypes)
+            'agree': (b'AGRE', b'\x00\x04\x10\x00'), 'refuse': (b'REFU', b'\x00\x04\x11\x00'),
+            'show': (b'SHOW', b'\x00\x04\x0f\x00'),
+            # combat reactions the engine speaks on its own (vanilla DialogueGeneric subtypes)
+            'attack': (b'ATCK', b'\x00\x03\x14\x00'), 'power_attack': (b'POAT', b'\x00\x03\x15\x00'),
+            'bash': (b'BASH', b'\x00\x03\x16\x00'), 'hit': (b'HIT_', b'\x00\x03\x17\x00'),
+            'flee': (b'FLEE', b'\x00\x03\x18\x00'), 'bleedout': (b'BLED', b'\x00\x03\x19\x00'),
+            'death': (b'DETH', b'\x00\x03\x1b\x00'), 'block': (b'BLOC', b'\x00\x03\x1d\x00'),
+            'taunt': (b'TAUT', b'\x00\x03\x1e\x00'), 'normal_to_combat': (b'NOTC', b'\x00\x05\x35\x00'),
+            'normal_to_alert': (b'NOTA', b'\x00\x05\x33\x00'), 'alert_to_combat': (b'ALTC', b'\x00\x05\x34\x00'),
+            'combat_to_normal': (b'COTN', b'\x00\x05\x37\x00')}
 INFO_RANDOM, INFO_SAY_ONCE = 0x2, 0x4
+COMBAT_LINES = {
+    'normal_to_combat': ["You'll regret this!", "Here we go!", "Draw your weapon!"],
+    'alert_to_combat': ["I knew it!", "There you are!"],
+    'normal_to_alert': ["Who's there?", "I heard something."],
+    'combat_to_normal': ["That's that, then.", "All clear."],
+    'attack': ["Hyah!", "Take that!", "Have at you!", "Ha!"],
+    'power_attack': ["Yaaah!", "Feel this!"],
+    'bash': ["Back off!", "Get away from me!"],
+    'block': ["Not today!", "Nice try!"],
+    'hit': ["Argh!", "Ugh!", "That hurt!", "Agh!"],
+    'taunt': ["Is that all you've got?", "You call that a fight?", "I've seen children fight better!"],
+    'flee': ["I'm getting out of here!", "Run!"],
+    'bleedout': ["I yield! I yield!", "Help me!"],
+    'death': ["Aaargh...", "No... not like this..."],
+}
+
+
+def combat_entries():
+    """Always-visible combat reaction lines, spoken by the engine like vanilla's generic combat dialogue."""
+    return [{'kind': k, 'answers': [[x] for x in lines]} for k, lines in COMBAT_LINES.items()]
+INFO_GOODBYE = 0x1
 PICK_MODES = ('random', 'in_order')
 
 
@@ -675,7 +733,9 @@ class NpcBuilder:
             if not isinstance(cost, int) or isinstance(cost, bool) or cost < 0:
                 p.errors.append("follower: cost must be a non-negative whole number")
                 cost = 50
-            entries += follower_entries(cost)
+            entries += follower_entries(cost, len(entries))
+        if spec.get('combat_lines'):
+            entries += combat_entries()
         for i, t in enumerate(entries):
             kind = t.get('kind', 'topic')
             lines = t.get('lines') or ([t['line']] if t.get('line') else [])
@@ -689,16 +749,19 @@ class NpcBuilder:
                         isinstance(a, list) and a and all(isinstance(x, str) for x in a) for a in answers)):
                     p.errors.append(f"dialogue[{i}]: answers must be a non-empty list of non-empty line lists")
                     answers = None
-                elif t.get('give_items') or t.get('code') or t.get('properties'):
-                    p.errors.append(f"dialogue[{i}]: answers cannot be combined with give_items or code")
                 if answers:
                     lines = answers[0]
             if t.get('pick', 'random') not in PICK_MODES:
                 p.errors.append(f"dialogue[{i}]: pick must be one of {list(PICK_MODES)}")
             if kind not in SUBTYPES:
                 p.errors.append(f"dialogue[{i}]: kind must be one of {list(SUBTYPES)}")
-            if kind == 'topic' and not t.get('prompt'):
+            if kind == 'topic' and not t.get('prompt') and not t.get('blocking'):
                 p.errors.append(f"dialogue[{i}]: a topic needs a prompt")
+            parent = t.get('child_of')
+            if parent is not None and not (isinstance(parent, int) and not isinstance(parent, bool)
+                                           and 0 <= parent < i and kind == 'topic'):
+                p.errors.append(f"dialogue[{i}]: child_of must be the index of an earlier topic entry")
+                parent = None
             if not lines:
                 p.errors.append(f"dialogue[{i}]: lines are required")
             try:
@@ -708,8 +771,17 @@ class NpcBuilder:
                 p.errors.append(f"dialogue[{i}]: text contains characters outside Windows-1252")
             script = self.plan_script(p, t, i)
             entry = (kind, t.get('prompt'), lines, script, self.plan_conditions(p, t, i))
+            opts = {}
             if answers and len(answers) > 1:
-                entry += ({'answers': answers, 'pick': t.get('pick', 'random')},)
+                opts.update(answers=answers, pick=t.get('pick', 'random'))
+            if parent is not None:
+                opts['child_of'] = parent
+            if t.get('blocking'):
+                opts['blocking'] = True
+            if t.get('goodbye'):
+                opts['goodbye'] = True
+            if opts:
+                entry += (opts,)
             p.topics.append(entry)
         if p.topics and not (spec.get('voice_type') or p.clone):
             p.warnings.append("dialogue will have no voice audio (subtitles only)")
@@ -722,9 +794,13 @@ class NpcBuilder:
             func = CONDITION_FUNCTIONS.get(c.get('function'))
             op = CONDITION_OPS.get(c.get('op', '=='))
             run_on = RUN_ON.get(c.get('run_on', 'subject'))
-            if func is None or op is None or run_on is None or ('form' not in c and 'actor_value' not in c):
+            if func is None or op is None or run_on is None or (
+                    'form' not in c and 'actor_value' not in c and c.get('function') not in NO_PARAM_FUNCTIONS):
                 p.errors.append(f"{label}: needs function {list(CONDITION_FUNCTIONS)}, form (or actor_value "
                                 f"for GetActorValue), op {list(CONDITION_OPS)} and run_on {list(RUN_ON)}")
+                continue
+            if c.get('function') in NO_PARAM_FUNCTIONS:
+                out.append((func, 0, op, float(c.get('value', 1)), run_on))
                 continue
             if 'actor_value' in c:
                 # actor value index, not a form; a negative id is written through unchanged
@@ -743,7 +819,8 @@ class NpcBuilder:
     def plan_script(self, p, t, i):
         """(papyrus code, [(property name, absolute form id)]) run when the line ends, or None."""
         bad = [k for k in t if k not in ('kind', 'prompt', 'line', 'lines', 'give_items', 'code', 'properties',
-                                         'conditions', 'show_while_following', 'answers', 'pick')]
+                                         'conditions', 'show_while_following', 'answers', 'pick', 'child_of',
+                                         'blocking', 'goodbye')]
         if bad:
             p.errors.append(f"dialogue[{i}]: unknown keys {bad}")
         code, props = [], []
@@ -1146,7 +1223,7 @@ class NpcBuilder:
 
     def lid(self, fid):
         """Output-plugin form ID: a negative value is already local (used for records made in this run)."""
-        return -fid if fid < 0 else self.local(fid)
+        return -fid if fid <= 0 else self.local(fid)
 
     def register(self, plugin, rec):
         """Append rec to the plugin and update its form ID, editor ID and signature indexes by hand."""
@@ -1449,7 +1526,7 @@ class NpcBuilder:
                 branch.add_subrecord('EDID', z(f"{qid}Branch{n}"))
                 branch.add_subrecord('QNAM', fid_bytes(quest.form_id.value))
                 branch.add_subrecord('TNAM', struct.pack('<I', 0))
-                branch.add_subrecord('DNAM', struct.pack('<I', 1))
+                branch.add_subrecord('DNAM', struct.pack('<I', 2 if opts.get('blocking') else 1))
                 branch.add_subrecord('SNAM', fid_bytes(dial.form_id.value))
                 plugin.add_record(branch)
                 branch_fid = branch.form_id.value
@@ -1462,6 +1539,8 @@ class NpcBuilder:
             group = GroupRecord(7, dial.form_id.value)
             top.records.append(group)
             def make_info(a_lines, flags):
+                if opts.get('goodbye'):
+                    flags |= INFO_GOODBYE
                 rec = Record('INFO', FormID(self.own(new_id())), 0)
                 rec.add_subrecord('ENAM', struct.pack('<HH', flags, 0))
                 rec.add_subrecord('CNAM', b'\x00')
@@ -1475,19 +1554,23 @@ class NpcBuilder:
                     rec.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', op << 5, value, func,
                                                           self.lid(fid), 0, run_on, 0, -1))
                 return rec
-            info = make_info(answers[0], answer_flags(opts.get('pick'), 0, len(answers)))
-            if script:
+            def attach_script(rec):
                 code, props = script
-                sname = script_name(plugin.file_path.name, 'TIF', info.form_id.value & 0xFFFFFF)
+                sname = script_name(plugin.file_path.name, 'TIF', rec.form_id.value & 0xFFFFFF)
                 pex = compile_script(sname, tif_source(sname, code, [(n_, 'Form') for n_, _ in props]),
                                      plugin.file_path.parent / 'Scripts')
-                info.add_subrecord('VMAD', info_vmad(sname, [(n_, self.lid(f)) for n_, f in props]))
-                info.subrecords.insert(0, info.subrecords.pop())
+                rec.add_subrecord('VMAD', info_vmad(sname, [(n_, self.lid(f)) for n_, f in props]))
+                rec.subrecords.insert(0, rec.subrecords.pop())
                 made.append({'type': 'script', 'editor_id': sname, 'object_id': str(pex)})
+            info = make_info(answers[0], answer_flags(opts.get('pick'), 0, len(answers)))
+            if script:
+                attach_script(info)
             group.records.append(info)
             self.register(plugin, info)
             for a_i, a_lines in enumerate(answers[1:], 1):
                 more = make_info(a_lines, answer_flags(opts.get('pick'), a_i, len(answers)))
+                if script:
+                    attach_script(more)
                 group.records.append(more)
                 self.register(plugin, more)
             made_topics[n - existing - 1] = (dial, info, branch_fid)

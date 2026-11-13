@@ -159,17 +159,40 @@ class TestFetchQuestSpec:
 
 
 class TestFollowerEntries:
+    def test_combat_entries_use_known_subtypes(self):
+        from tools.npcs import npc_builder as nb
+        entries = nb.combat_entries()
+        assert entries and all(e['kind'] in nb.SUBTYPES and len(e['answers']) >= 2 for e in entries)
+
     def by_prompt(self, cost=50):
         out = {}
         for e in follower_entries(cost):
-            out.setdefault(e["prompt"], []).append(e)
+            if "prompt" in e:
+                out.setdefault(e["prompt"], []).append(e)
         return out
 
     def test_topics_present(self):
         prompts = self.by_prompt(25)
         assert set(prompts) == {"Would you travel with me? (25 gold)", "Wait here.", "Follow me.",
-                                "I don't need you anymore."}
+                                "I don't need you anymore.", "Trade some items.",
+                                "I need you to do something.", "Yes. Let me show you.", "No. Never mind."}
         assert len(prompts["Would you travel with me? (25 gold)"]) == 2
+
+    def test_favor_flow_uses_a_blocking_topic(self):
+        entries = follower_entries(50, 3)
+        favor = lambda v: {"function": "IsDoingFavor", "op": "==", "value": v}
+        start = next(e for e in entries if e.get("prompt") == "I need you to do something.")
+        assert favor(0) in start["conditions"]
+        (block_idx,) = [i for i, e in enumerate(entries) if e.get("blocking")]
+        assert favor(1) in entries[block_idx]["conditions"] and "prompt" not in entries[block_idx]
+        for prompt in ("Yes. Let me show you.", "No. Never mind."):
+            (child,) = [e for e in entries if e.get("prompt") == prompt]
+            assert child["child_of"] == 3 + block_idx
+        end = next(e for e in entries if e.get("prompt") == "No. Never mind.")
+        assert "SetDoingFavor(false)" in end["code"]
+        for prompt in ("Wait here.", "Follow me.", "I don't need you anymore.", "I need you to do something.",
+                       "Yes. Let me show you.", "No. Never mind."):
+            assert next(e for e in entries if e.get("prompt") == prompt)["goodbye"]
 
     def test_hiring_only_while_not_hired_and_needs_gold(self):
         accept, refuse = self.by_prompt(30)["Would you travel with me? (30 gold)"]

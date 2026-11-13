@@ -13,7 +13,7 @@ Use the `follower` field of `create_npc` or `edit_npc` (see `skyrim-dialogue` fo
 ```
 edit_npc("Nevs", {"follower": {"cost": 25}, "quest_editor_id": "NevsDialogueQuest"}, "Nevs.esp")
 ```
-`follower: true` uses the default cost of 50 gold. It adds five topics for that NPC:
+`follower: true` uses the default cost of 50 gold. It adds these topics for that NPC:
 
 | Topic | Shown when | Effect |
 |-------|-----------|--------|
@@ -22,6 +22,17 @@ edit_npc("Nevs", {"follower": {"cost": 25}, "quest_editor_id": "NevsDialogueQues
 | Wait here. | hired | `FollowerWait()` |
 | Follow me. | hired | `FollowerFollow()` |
 | I don't need you anymore. | hired | `DismissFollower(0, 0)` |
+| Trade some items. | hired | `OpenInventory(true)` |
+| I need you to do something. | hired, not `IsDoingFavor` | `SetDoingFavor(true)` (vanilla favor mode) |
+| (blocking, no prompt) "Still need me to do something?" | hired, `IsDoingFavor` | Blocking branch like vanilla `DialogueFollowerDoingFavorBlockingTopic`: while a favor is active it replaces the normal topic list and offers only the two below |
+| Yes. Let me show you. | offered by the blocking topic | Reply only; favor continues |
+| No. Never mind. | offered by the blocking topic | `SetDoingFavor(false)` |
+
+Vanilla has no "refusal" topic for favors: those lines are engine-played voice lines, not dialogue.
+
+**Favor reactions.** While a favor is active the engine speaks "Got it" / "I can't do that" / "Here, take a look" lines from vanilla `DialogueFollower` topics with subtypes `AGRE`, `REFU` and `SHOW` (`26EC9`, `26EC3`, `26ED0`). Their INFOs are gated by `GetIsVoiceType` on the formlists `VoicesFollowerNeutral` etc., so a custom voice type (Nevs's `NevsVoice`) never matches them while `MaleYoungEager` (Sven) does. The follower template adds `kind: "agree" | "refuse" | "show"` entries conditioned on the hireling faction; the lines are subtitle-only like the rest of the NPC's dialogue.
+
+The blocking topic uses generic dialogue entry keys (see `skyrim-dialogue`): `"blocking": true`, `"child_of": <index>` and `"goodbye": true`. Vanilla INFOs for Wait, Follow, Dismiss, favor start, Yes and No all carry the Goodbye flag (ENAM bit 1), so the conversation closes after them; Trade and the blocking line do not. Checked against vanilla INFOs `0005C83B`, `0007A1EB`, `0005C826`, `000D8DC2`, `000D8DCC`, `000D8E14` and DLBR `00027096`. An NPC edited without `follower` can reuse the keys: a hired NPC's existing "I need you to do something." needs no change, since the blocking branch hides it during a favor.
 
 "Hired" means `GetInFaction CurrentHireling == 1`. Scripts are generated and compiled as in the dialogue skill, so run `package_plugin` afterwards and reinstall in Vortex.
 
@@ -31,7 +42,7 @@ When `follower` is set, every other `dialogue` entry in the same call (greeting,
 Entries created in an earlier call are not changed. Fix them by adding a `GetInFaction CurrentHireling == 0` CTDA to each INFO (copy the CTDA from the "hire" refusal INFO: function 71, param1 = CurrentHireling, value 0), or recreate the NPC's dialogue with `follower` set in the same call. Nevs's existing INFOs `000804`-`00080E` were patched this way.
 
 ## Conditions on any dialogue entry
-`conditions` is a list of `{"function", "form", "op", "value", "run_on"}`. Functions: `GetItemCount`, `GetInFaction`, `GetGlobalValue`, `GetStage`, `GetActorValue` (give `actor_value` as an index instead of `form`). Ops: `==  !=  >  >=  <  <=`. `run_on` is `subject` (the NPC, default) or `target` (the player). All conditions must be true, and the NPC's own `GetIsID` is always added.
+`conditions` is a list of `{"function", "form", "op", "value", "run_on"}`. Functions: `GetItemCount`, `GetInFaction`, `GetGlobalValue`, `GetStage`, `GetActorValue` (give `actor_value` as an index instead of `form`), `IsDoingFavor` (no form). Ops: `==  !=  >  >=  <  <=`. `run_on` is `subject` (the NPC, default) or `target` (the player). All conditions must be true, and the NPC's own `GetIsID` is always added.
 
 ## Checks and caveats
 - The hiring Papyrus is `SetFollower` from `DialogueFollowerScript`; read it with `get_script("DialogueFollowerScript")`.

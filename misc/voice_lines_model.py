@@ -1,4 +1,4 @@
-"""Data side of voice_lines_gui: list a plugin's spoken dialogue lines with speaker and voice file lookup,
+﻿"""Data side of voice_lines_gui: list a plugin's spoken dialogue lines with speaker and voice file lookup,
 and read/write the loose voice files under Sound\\Voice\\<plugin>\\<voice type>\\."""
 import struct
 import subprocess
@@ -240,6 +240,55 @@ def edit_response(model, plugin_path, line, text, emotion, emotion_value, use_em
     plugin.save(str(plugin_path))
     line.text, line.emotion, line.emotion_value = text, emotion, emotion_value
     line.use_emotion_anim, line.speaker_idle, line.listener_idle = use_emotion_anim, speaker_idle, listener_idle
+
+
+def suggest_emotion(text):
+    """(emotion index into EMOTIONS, value 0-100) guessed from the words of a line with NRCLex, or None when nothing
+    stands out. NRC has no 'puzzled', so a question with no emotional words becomes Puzzled."""
+    import re
+    try:
+        from nrclex import NRCLex
+    except ImportError:
+        raise RuntimeError("NRCLex is not installed; run: pip install nrclex")
+    nrc_to_skyrim = {'anger': 1, 'disgust': 2, 'fear': 3, 'sadness': 4, 'joy': 5, 'surprise': 6}
+    lex = NRCLex()
+    lex.load_token_list(re.findall(r"[a-z']+", text.lower()))
+    scores = {k: v for k, v in lex.raw_emotion_scores.items() if k in nrc_to_skyrim}
+    if not scores:
+        return (7, 50) if '?' in text else None
+    best = max(scores.values())
+    top = next(k for k in nrc_to_skyrim if scores.get(k) == best)
+    return nrc_to_skyrim[top], min(100, 40 + 20 * best)
+
+
+def set_emotions(plugin_path, changes):
+    """Set (emotion, value) on many of the plugin's own lines at once: changes is [(line, emotion, value)].
+    One snapshot is taken first. Returns the number of lines changed."""
+    from esplib import Plugin
+    from tools.records.maintenance import all_records, snapshot
+
+    plugin = Plugin.load(str(plugin_path))
+    targets = {r.form_id.value: r for r in all_records(plugin) if r.signature == 'INFO'}
+    done = []
+    for line, emotion, value in changes:
+        target = targets.get(line.info.form_id.value)
+        groups = response_groups(target.subrecords) if target is not None else []
+        if not line.editable or line.index >= len(groups):
+            continue
+        done.append((line, target, groups[line.index][0], emotion, value))
+    if not done:
+        return 0
+    snapshot(plugin_path, 'pre_emotion_suggest')
+    for line, target, trdt_sub, emotion, value in done:
+        trdt = bytearray(bytes(trdt_sub.data).ljust(24, b'\0'))
+        struct.pack_into('<II', trdt, 0, emotion, value)
+        trdt_sub.data = trdt
+        trdt_sub.modified = True
+        target.modified = True
+    plugin.save(str(plugin_path))
+    for line, _, _, emotion, value in done:
+        line.emotion, line.emotion_value = emotion, value
+    return len(done)
 
 
 def all_voice_types(model):
@@ -487,60 +536,216 @@ def convert_to_fuz(line, plugin_path, tools):
     return dest
 
 
+def original_backup_path(plugin_path, audio):
+    """Where the untouched copy of a voice file lives: <plugin folder>/voice_originals/<same relative path>.
+    Outside Sound/, so it is never packaged or installed."""
+    base = Path(plugin_path).parent
+    return base / 'voice_originals' / Path(audio).relative_to(base)
+
+
+def drop_originals(plugin_path, line):
+    """Forget saved originals of a line whose audio was just replaced (re-record/upload), so Restore can't bring back stale audio."""
+    root = Path(plugin_path).parent / 'voice_originals'
+    if root.is_dir():
+        for f in root.rglob(f"{line.stem}.*"):
+            if f.suffix.lower() in AUDIO_EXTS:
+                f.unlink(missing_ok=True)
+
+
+def restore_original(plugin_path, line):
+    """Put back the file saved before the first volume/pitch adjust. False when the line has no saved original."""
+    import shutil
+    if line.audio is None:
+        return False
+    backup = original_backup_path(plugin_path, line.audio)
+    if not backup.is_file():
+        return False
+    shutil.copyfile(backup, line.audio)
+    backup.unlink()
+    return True
+
+
+def adjust_audio(line, plugin_path, gain_db=0.0, semitones=0.0, tools=None):
+    """Change a loose voice file's volume (dB) and pitch (semitones, duration kept so the lip sync still fits) in place.
+    .wav is rewritten directly; .fuz/.xwm are decoded, adjusted and re-encoded with xwmaencode (keeping the .fuz lip data).
+    The file as it was before the first adjust is saved once (see original_backup_path) so restore_original can undo
+    any number of stacked adjusts."""
+    path = line.audio
+    if path is None:
+        raise RuntimeError("the line has no loose audio file")
+    ext = path.suffix.lower()
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is needed to adjust volume and pitch; install it and add it to PATH")
+    if ext != '.wav' and 'xwmaencode' not in (tools or {}):
+        raise RuntimeError("xwmaencode (Skyrim SE Tools) is needed to re-encode .fuz/.xwm files")
+    original = path.read_bytes()
+    factor = 2 ** (semitones / 12)
+    filters = ['aresample=44100']
+    if semitones:
+        filters += [f'asetrate={44100 * factor:.3f}', 'aresample=44100', f'atempo={1 / factor:.6f}']
+    if gain_db:
+        filters += [f'volume={gain_db}dB', 'alimiter=limit=0.97']
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = td / 'in.wav' if ext == '.wav' else td / 'in.xwm'
+        lip = None
+        if ext == '.wav':
+            src.write_bytes(original)
+        elif ext == '.fuz':
+            lip, xwm = split_fuz(original)
+            src.write_bytes(xwm)
+        else:
+            src.write_bytes(original)
+        out = td / 'out.wav'
+        done = subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-i', str(src), '-af', ','.join(filters),
+                               '-ac', '1', '-ar', '44100', '-sample_fmt', 's16', str(out)], capture_output=True, text=True)
+        if done.returncode:
+            raise RuntimeError(done.stderr.strip() or "ffmpeg could not process the audio")
+        if ext == '.wav':
+            result = out.read_bytes()
+        else:
+            xwm_out = td / 'out.xwm'
+            enc = subprocess.run([str(tools['xwmaencode']), '-b', '64000', str(out), str(xwm_out)],
+                                 capture_output=True, text=True, cwd=td)
+            if enc.returncode or not xwm_out.is_file():
+                raise RuntimeError(f"xWMAEncode failed: {(enc.stdout + enc.stderr).strip()[:400]}")
+            xwm_bytes = xwm_out.read_bytes()
+            result = xwm_bytes if ext == '.xwm' else (
+                original[:8] + struct.pack('<I', len(lip)) + lip + xwm_bytes)
+    backup = original_backup_path(plugin_path, path)
+    if not backup.exists():
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        backup.write_bytes(original)
+    path.write_bytes(result)
+    return path
+
+
 def shutil_copy(src, dest):
     import shutil
     shutil.copyfile(src, dest)
 
 
-class Recorder:
-    """Microphone capture to 16-bit mono WAV through the Windows MCI API (no extra packages)."""
+def list_input_devices():
+    """Recording devices as [(waveIn id, name)]; names are truncated to 31 characters by the winmm API."""
+    import ctypes
+    from ctypes import wintypes
 
-    def __init__(self):
-        import ctypes
-        self.mci = ctypes.windll.winmm.mciSendStringW
-        self.alias = 'voiceline'
+    class CAPS(ctypes.Structure):
+        _fields_ = [('mid', wintypes.WORD), ('pid', wintypes.WORD), ('ver', wintypes.UINT),
+                    ('name', ctypes.c_wchar * 32), ('formats', wintypes.DWORD),
+                    ('channels', wintypes.WORD), ('res', wintypes.WORD)]
+
+    winmm = ctypes.windll.winmm
+    out = []
+    for i in range(winmm.waveInGetNumDevs()):
+        caps = CAPS()
+        if winmm.waveInGetDevCapsW(ctypes.c_size_t(i), ctypes.byref(caps), ctypes.sizeof(caps)) == 0:
+            out.append((i, caps.name))
+    return out
+
+
+class Recorder:
+    """Microphone capture to 16-bit mono 44.1 kHz WAV through the Windows waveIn API (no extra packages).
+    device is a waveIn id from list_input_devices(), or None for the system default."""
+
+    RATE = 44100
+    BUF_BYTES = 8820
+    BUF_COUNT = 16
+
+    def __init__(self, device=None):
+        self.device = device
         self.active = False
 
-    def send(self, cmd):
-        import ctypes
-        buf = ctypes.create_unicode_buffer(256)
-        err = self.mci(cmd, buf, 255, 0)
-        if err:
-            msg = ctypes.create_unicode_buffer(256)
-            ctypes.windll.winmm.mciGetErrorStringW(err, msg, 255)
-            raise RuntimeError(f"{msg.value} ({cmd})")
-        return buf.value
-
     def start(self):
-        self.send(f'open new type waveaudio alias {self.alias}')
+        import ctypes
+        import threading
+        from ctypes import wintypes
+
+        class FMT(ctypes.Structure):
+            _pack_ = 1
+            _fields_ = [('tag', wintypes.WORD), ('channels', wintypes.WORD), ('rate', wintypes.DWORD),
+                        ('avg', wintypes.DWORD), ('align', wintypes.WORD), ('bits', wintypes.WORD),
+                        ('cb', wintypes.WORD)]
+
+        class HDR(ctypes.Structure):
+            _fields_ = [('data', ctypes.c_void_p), ('length', wintypes.DWORD), ('recorded', wintypes.DWORD),
+                        ('user', ctypes.c_size_t), ('flags', wintypes.DWORD), ('loops', wintypes.DWORD),
+                        ('next', ctypes.c_void_p), ('reserved', ctypes.c_size_t)]
+
+        self._HDR = HDR
+        self.winmm = winmm = ctypes.windll.winmm
+        winmm.waveInOpen.argtypes = [ctypes.POINTER(ctypes.c_void_p), wintypes.UINT, ctypes.POINTER(FMT),
+                                     ctypes.c_size_t, ctypes.c_size_t, wintypes.DWORD]
+        for fn in (winmm.waveInPrepareHeader, winmm.waveInUnprepareHeader, winmm.waveInAddBuffer):
+            fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(HDR), wintypes.UINT]
+        for fn in (winmm.waveInStart, winmm.waveInStop, winmm.waveInReset, winmm.waveInClose):
+            fn.argtypes = [ctypes.c_void_p]
+
+        fmt = FMT(1, 1, self.RATE, self.RATE * 2, 2, 16, 0)
+        self.handle = ctypes.c_void_p()
+        dev = 0xFFFFFFFF if self.device is None else self.device
+        err = winmm.waveInOpen(ctypes.byref(self.handle), dev, ctypes.byref(fmt), 0, 0, 0)
+        if err:
+            raise RuntimeError(f"Could not open the recording device (waveIn error {err})")
         self.active = True
-        try:
-            self.send(f'set {self.alias} format tag pcm')
-            self.send(f'set {self.alias} bitspersample 16 channels 1 samplespersec 44100 '
-                      'alignment 2 bytespersec 88200')
-            self.send(f'record {self.alias}')
-        except RuntimeError:
+        self.chunks = []
+        self.stopping = False
+        self._bufs = [ctypes.create_string_buffer(self.BUF_BYTES) for _ in range(self.BUF_COUNT)]
+        self._hdrs = []
+        for b in self._bufs:
+            h = HDR(ctypes.cast(b, ctypes.c_void_p), self.BUF_BYTES)
+            winmm.waveInPrepareHeader(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+            winmm.waveInAddBuffer(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+            self._hdrs.append(h)
+        if winmm.waveInStart(self.handle):
             self.cancel()
-            raise
+            raise RuntimeError("Could not start recording")
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _drain(self, requeue):
+        import ctypes
+        for h in self._hdrs:
+            if h.flags & 1:  # WHDR_DONE
+                self.chunks.append(ctypes.string_at(h.data, h.recorded))
+                h.flags &= ~1
+                h.recorded = 0
+                if requeue:
+                    self.winmm.waveInAddBuffer(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+
+    def _pump(self):
+        import time
+        while not self.stopping:
+            self._drain(True)
+            time.sleep(0.03)
 
     def stop(self, dest):
-        """Stop and save to dest (parent folders created). MCI rejects long paths, so it saves to a short temp file first."""
-        import shutil
+        """Stop and save to dest (parent folders created)."""
+        import wave
         dest = Path(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.gettempdir()) / 'vlrec.wav'
-        tmp.unlink(missing_ok=True)
         try:
-            self.send(f'stop {self.alias}')
-            self.send(f'save {self.alias} "{tmp}" wait')
+            self.stopping = True
+            self._thread.join()
+            self.winmm.waveInStop(self.handle)
+            self.winmm.waveInReset(self.handle)
+            self._drain(False)
+            data = b''.join(self.chunks)
         finally:
             self.cancel()
-        shutil.move(str(tmp), str(dest))
+        with wave.open(str(dest), 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(self.RATE)
+            w.writeframes(data)
 
     def cancel(self):
+        import ctypes
         if self.active:
-            try:
-                self.send(f'close {self.alias}')
-            except RuntimeError:
-                pass
+            self.stopping = True
+            self.winmm.waveInReset(self.handle)
+            for h in self._hdrs:
+                self.winmm.waveInUnprepareHeader(self.handle, ctypes.byref(h), ctypes.sizeof(h))
+            self.winmm.waveInClose(self.handle)
             self.active = False

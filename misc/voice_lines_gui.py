@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from voice_lines_model import (EMOTIONS, Recorder, all_idles, edit_response, all_voice_types, assign_voice_type, bsa_index, convert_to_fuz, create_voice_type, find_audio,
+from voice_lines_model import (EMOTIONS, Recorder, adjust_audio, drop_originals, list_input_devices, original_backup_path, restore_original, set_emotions, suggest_emotion, all_idles, edit_response, all_voice_types, assign_voice_type, bsa_index, convert_to_fuz, create_voice_type, find_audio,
                                find_voice_tools,
                                import_audio, line_wav_path, load_lines, playable_wav)
 from tools.core.plugin_edit import package_plugin
@@ -65,7 +65,7 @@ class App(tk.Tk):
                         command=self.fill).pack(side='left', padx=8)
 
         cols = ('quest', 'topic', 'speaker', 'voice', 'audio', 'text')
-        self.tree = ttk.Treeview(self, columns=cols, show='headings', selectmode='browse')
+        self.tree = ttk.Treeview(self, columns=cols, show='headings', selectmode='extended')
         for c, w in zip(cols, (150, 170, 160, 130, 70, 600)):
             self.tree.heading(c, text=c.title())
             self.tree.column(c, width=w, stretch=(c == 'text'))
@@ -102,6 +102,9 @@ class App(tk.Tk):
         self.lis_box = ttk.Combobox(er, textvariable=self.lis_idle, width=24)
         self.lis_box.pack(side='left', padx=4)
         ttk.Button(er, text="Apply", command=self.apply_edit).pack(side='left', padx=4)
+        ttk.Button(er, text="Suggest", command=self.suggest_one).pack(side='left')
+        ttk.Button(er, text="Suggest for selected", command=lambda: self.suggest_all(True)).pack(side='left', padx=4)
+        ttk.Button(er, text="Suggest for all Neutral", command=self.suggest_all).pack(side='left')
         row = ttk.Frame(panel)
         row.pack(fill='x')
         ttk.Label(row, text="Voice type:").pack(side='left')
@@ -115,10 +118,80 @@ class App(tk.Tk):
         ttk.Button(row, text="Stop", command=lambda: winsound.PlaySound(None, winsound.SND_PURGE)).pack(side='left', padx=4)
         self.rec_btn = ttk.Button(row, text="Record", command=self.toggle_record)
         self.rec_btn.pack(side='left', padx=(10, 0))
+        self.mic = tk.StringVar()
+        self.mic_box = ttk.Combobox(row, textvariable=self.mic, width=28, state='readonly', postcommand=self.refresh_mics)
+        self.mic_box.pack(side='left', padx=4)
+        self.refresh_mics()
         ttk.Button(row, text="Upload audio...", command=self.upload).pack(side='left', padx=4)
-        ttk.Button(row, text="To .fuz", command=lambda: self.to_fuz(False)).pack(side='left', padx=4)
+        ttk.Button(row, text="Selected to .fuz", command=lambda: self.to_fuz(False)).pack(side='left', padx=4)
         ttk.Button(row, text="All WAVs to .fuz", command=lambda: self.to_fuz(True)).pack(side='left')
         ttk.Button(row, text="Delete recording", command=self.delete).pack(side='left', padx=4)
+
+        adj = ttk.Frame(panel)
+        adj.pack(fill='x', pady=(4, 0))
+        self.gain = tk.DoubleVar(value=0.0)
+        self.pitch = tk.DoubleVar(value=0.0)
+        ttk.Label(adj, text="Volume (dB):").pack(side='left')
+        ttk.Spinbox(adj, from_=-30, to=30, increment=1, textvariable=self.gain, width=6).pack(side='left', padx=4)
+        ttk.Label(adj, text="Pitch (semitones):").pack(side='left', padx=(10, 0))
+        ttk.Spinbox(adj, from_=-12, to=12, increment=0.5, textvariable=self.pitch, width=6).pack(side='left', padx=4)
+        ttk.Button(adj, text="Adjust selected", command=lambda: self.adjust(False)).pack(side='left', padx=(10, 0))
+        ttk.Button(adj, text="Adjust all lines", command=lambda: self.adjust(True)).pack(side='left', padx=4)
+        ttk.Button(adj, text="Restore selected originals", command=lambda: self.restore(False)).pack(side='left')
+        ttk.Button(adj, text="Restore all originals", command=lambda: self.restore(True)).pack(side='left', padx=4)
+
+    def adjust(self, everything):
+        """Raise/lower volume and shift pitch of the plugin's loose voice files (selected lines or all)."""
+        try:
+            gain, pitch = float(self.gain.get()), float(self.pitch.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Adjust", "Volume and pitch must be numbers.")
+            return
+        if not gain and not pitch:
+            messagebox.showinfo("Adjust", "Set a volume and/or pitch change first.")
+            return
+        loose = lambda ln: ln.audio is not None and self.plugin.parent in ln.audio.parents
+        if everything:
+            todo = [ln for ln in self.lines if loose(ln)]
+            if todo and not messagebox.askyesno("Adjust", f"Apply {gain:+g} dB / {pitch:+g} semitones to {len(todo)} line(s)?"):
+                return
+        else:
+            todo = [ln for ln in self.selected() if loose(ln)]
+        if not todo:
+            messagebox.showinfo("Adjust", "No loose voice files in the plugin's output folder to adjust.")
+            return
+        tools = find_voice_tools(DATA_DIR)
+
+        def work():
+            errors, done_count = [], 0
+            for i, ln in enumerate(todo, 1):
+                self.calls.put(lambda i=i: self.status.config(text=f"Adjusting {i}/{len(todo)}..."))
+                try:
+                    adjust_audio(ln, self.plugin, gain, pitch, tools)
+                    done_count += 1
+                except Exception as e:
+                    errors.append(f"{ln.stem}: {e}")
+            def done():
+                self.on_select()
+                self.status.config(text=f"Adjusted {done_count} line(s); originals saved in voice_originals/")
+                if errors:
+                    messagebox.showerror("Adjust", f"{len(errors)} failed:\n" + "\n".join(errors[:5]))
+            self.calls.put(done)
+        threading.Thread(target=work, daemon=True).start()
+
+    def restore(self, everything):
+        """Put back the recordings saved before their first volume/pitch adjust."""
+        todo = self.lines if everything else self.selected()
+        todo = [ln for ln in todo if ln.audio is not None
+                and original_backup_path(self.plugin, ln.audio).is_file()]
+        if not todo:
+            messagebox.showinfo("Restore", "No saved originals to restore.")
+            return
+        if everything and not messagebox.askyesno("Restore", f"Restore {len(todo)} line(s) to their original audio?"):
+            return
+        for ln in todo:
+            restore_original(self.plugin, ln)
+        self.status.config(text=f"Restored {len(todo)} line(s)")
 
     def choose(self):
         p = filedialog.askopenfilename(title="Plugin", filetypes=[("Plugins", "*.esp *.esm *.esl"), ("All", "*.*")])
@@ -184,6 +257,9 @@ class App(tk.Tk):
         sel = self.tree.selection()
         return self.lines[int(sel[0])] if sel else None
 
+    def selected(self):
+        return [self.lines[int(i)] for i in self.tree.selection()]
+
     def on_select(self, _=None):
         ln = self.current()
         if ln is None:
@@ -226,6 +302,43 @@ class App(tk.Tk):
         self.refresh(ln)
         self.status.config(text="Saved (snapshot 'pre_dialogue_edit' taken first)")
 
+    def suggest_one(self):
+        """Fill the emotion fields from the response text (in the edit box); Apply saves them."""
+        try:
+            guess = suggest_emotion(self.edit_text.get('1.0', 'end'))
+        except RuntimeError as e:
+            messagebox.showerror("Suggest", str(e))
+            return
+        if guess is None:
+            messagebox.showinfo("Suggest", "No emotion stands out in this line; leaving it as is.")
+            return
+        self.emotion.set(EMOTIONS[guess[0]])
+        self.emo_value.set(guess[1])
+
+    def suggest_all(self, selected_only=False):
+        """Guess an emotion for every editable line (or selected ones) still at Neutral and save them in one go."""
+        changes = []
+        try:
+            for ln in (self.selected() if selected_only else self.lines):
+                if ln.editable and ln.emotion == 0 and (guess := suggest_emotion(ln.text)):
+                    changes.append((ln, *guess))
+        except RuntimeError as e:
+            messagebox.showerror("Suggest", str(e))
+            return
+        if not changes:
+            messagebox.showinfo("Suggest", "No Neutral lines with a detectable emotion.")
+            return
+        if not messagebox.askyesno("Suggest", f"Set an emotion on {len(changes)} Neutral line(s)? "
+                                              "A snapshot is taken first."):
+            return
+        try:
+            n = set_emotions(self.plugin, changes)
+        except Exception as e:
+            messagebox.showerror("Suggest", str(e))
+            return
+        self.on_select()
+        self.status.config(text=f"Set emotion on {n} line(s) (snapshot 'pre_emotion_suggest' taken first)")
+
     def on_voice(self):
         ln = self.current()
         if ln and self.voice.get() and self.voice.get() not in ln.voice_types:
@@ -256,6 +369,16 @@ class App(tk.Tk):
             return
         winsound.PlaySound(str(wav), winsound.SND_FILENAME | winsound.SND_ASYNC)
 
+    def refresh_mics(self):
+        """Re-scan recording devices (so a newly plugged-in mic appears), keeping the current choice."""
+        default = "System default"
+        self.mics = {default: None}
+        for i, name in list_input_devices():
+            self.mics[name] = i
+        self.mic_box.config(values=list(self.mics))
+        if self.mic.get() not in self.mics:
+            self.mic.set(default)
+
     def toggle_record(self):
         if self.recording is None:
             ln = self.current()
@@ -268,7 +391,8 @@ class App(tk.Tk):
             if self.has_audio(ln) and not messagebox.askyesno("Record", "This line already has audio. Record a new .wav?"):
                 return
             try:
-                self.recorder = Recorder()
+                self.refresh_mics()
+                self.recorder = Recorder(self.mics.get(self.mic.get()))
                 self.recorder.start()
             except Exception as e:
                 messagebox.showerror("Record", f"Could not start recording: {e}")
@@ -285,6 +409,7 @@ class App(tk.Tk):
                 messagebox.showerror("Record", str(e))
             self.recording = None
             self.rec_btn.config(text="Record")
+            drop_originals(self.plugin, ln)
             if vt not in ln.voice_types:
                 ln.voice_types.insert(0, vt)
             find_audio(ln, self.plugin, [DATA_DIR] if DATA_DIR.is_dir() else (), self.bsas, vt)
@@ -338,6 +463,7 @@ class App(tk.Tk):
             return
         try:
             import_audio(ln, src, self.plugin, vt)
+            drop_originals(self.plugin, ln)
         except Exception as e:
             messagebox.showerror("Upload", str(e))
             return
@@ -358,8 +484,7 @@ class App(tk.Tk):
             todo = [ln for ln in self.lines if ln.audio is not None and ln.audio.suffix.lower() == '.wav'
                     and self.plugin.parent in ln.audio.parents]
         else:
-            ln = self.current()
-            todo = [ln] if ln and ln.audio is not None and ln.audio.suffix.lower() == '.wav' else []
+            todo = [ln for ln in self.selected() if ln.audio is not None and ln.audio.suffix.lower() == '.wav']
         if not todo:
             messagebox.showinfo(".fuz", "No loose .wav recordings to convert.")
             return

@@ -63,7 +63,6 @@ class TestCreateNpc:
         base = {"plugin_name": "Bad.esp", "editor_id": "X", "name": "X", "clone_from": "Sven"}
         for entry in ({"prompt": "a", "lines": ["x"], "answers": [["y"]]},
                       {"prompt": "a", "answers": [[]]},
-                      {"prompt": "a", "answers": [["y"], ["z"]], "code": "Debug.Trace(\"x\")"},
                       {"prompt": "a", "answers": [["y"], ["z"]], "pick": "nope"}):
             assert "error" in server.create_npc({**base, "dialogue": [{"kind": "topic", **entry}]}), entry
 
@@ -96,7 +95,7 @@ class TestCreateNpc:
         assert "error" not in res, res
         plugin = Plugin.load(str(sandbox / "Fol.esp"))
         prompts = [r.get_subrecord("FULL") for r in plugin.records if r.signature == "DIAL"]
-        assert len([p for p in prompts if p is not None]) == 6  # chat + 2 hire + wait + follow + dismiss
+        assert len([p for p in prompts if p is not None]) == 10  # chat + 2 hire + wait, follow, dismiss, trade, 3 favor
 
 
 class TestDrafts:

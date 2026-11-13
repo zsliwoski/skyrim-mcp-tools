@@ -133,9 +133,12 @@ def _copy_texture(old, dest, plugin_dir, dirs, archives, taken, done, warnings):
     return done[key]
 
 
-def duplicate_asset(model, plugin_path, asset, dest, editor_id=None, dirs=(), archives=None, data_dir=None, mode=None):
+def duplicate_asset(model, plugin_path, asset, dest, editor_id=None, dirs=(), archives=None, data_dir=None, mode=None,
+                    model_name=None):
     """Copy an asset's meshes/textures into the plugin folder under `dest` and point a record at the copies.
 
+    The first mesh is saved as Meshes\\<dest>\\<model_name>.nif (default: its original name) and the textures it uses
+    go to Textures\\<dest>\\<that name>\\. Other meshes keep their names.
     mode 'clone' clones the record under `editor_id`; 'repoint' edits the record itself (a master's record becomes an
     override in the plugin); 'files' only copies the files and leaves every record alone. By default it is 'clone'
     when an editor ID is given and 'repoint' otherwise. Returns {'record', 'files', 'warnings'}.
@@ -150,6 +153,8 @@ def duplicate_asset(model, plugin_path, asset, dest, editor_id=None, dirs=(), ar
     plugin_path = Path(plugin_path)
     if not NAME_RE.fullmatch(dest or ''):
         raise ValueError("folder name may contain only letters, digits and underscores")
+    if model_name and not NAME_RE.fullmatch(model_name):
+        raise ValueError("model name may contain only letters, digits and underscores")
     mode = mode or ('clone' if editor_id else 'repoint')
     if mode not in ('clone', 'repoint', 'files'):
         raise ValueError(f"unknown mode {mode!r}")
@@ -171,11 +176,12 @@ def duplicate_asset(model, plugin_path, asset, dest, editor_id=None, dirs=(), ar
             raise ValueError(f"mesh not found: {rel}")
         nif = nif_tools.parse(data)
         mapping = {}
+        orig = norm(rel).rsplit('\\', 1)[-1]
+        name = _unique(f'{model_name}.nif' if model_name and not new_paths else orig, nif_names)
         for tex in nif_tools.texture_paths(nif):
-            new = _copy_texture(tex, dest, plugin_dir, dirs, archives, tex_names, done, warnings)
+            new = _copy_texture(tex, f'{dest}\\{Path(name).stem}', plugin_dir, dirs, archives, tex_names, done, warnings)
             if new:
                 mapping[norm(tex)] = f'textures\\{new}'
-        name = _unique(norm(rel).rsplit('\\', 1)[-1], nif_names)
         out = plugin_dir / 'Meshes' / dest / name
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(nif_tools.replace_textures(nif, mapping))
@@ -238,6 +244,89 @@ def first_person_asset(model, assets, weapon):
     return next((a for a in assets if a.fid == fid), None)
 
 
+LABELS = {
+    ('WEAP', 'MODL'): "World / third-person model",
+    ('STAT', 'MODL'): "Model",
+    ('BOOK', 'MODL'): "World model",
+    ('ARMO', 'MOD2'): "Male world model", ('ARMO', 'MOD4'): "Female world model",
+    ('ARMO', 'MOD3'): "Male model (MOD3)", ('ARMO', 'MOD5'): "Female model (MOD5)",
+    ('ARMA', 'MOD2'): "Male body model", ('ARMA', 'MOD3'): "Female body model",
+    ('ARMA', 'MOD4'): "Male first-person model", ('ARMA', 'MOD5'): "Female first-person model",
+}
+
+
+@dataclass
+class ModelEntry:
+    holder: object  # the Asset whose subrecord holds the path
+    sig: str
+    rel: str
+    label: str
+    parent: object = None  # the Asset that reaches `holder` through a form ID (None when holder is the record itself)
+    ref_sig: str = ''  # subrecord of `parent` holding that form ID
+
+
+def model_entries(model, assets, asset):
+    """Every NIF a record uses: its own models plus those of the records it points to (a weapon's first-person STAT,
+    an armor's armor addons)."""
+    by_fid = {a.fid: a for a in assets}
+    out = [ModelEntry(asset, sig, rel, LABELS.get((asset.sig, sig), f"Model ({sig})")) for sig, rel in asset.models]
+    refs = []
+    if asset.sig == 'WEAP':
+        sub = asset.record.get_subrecord('WNAM')
+        if sub is not None and len(sub.data) >= 4:
+            refs.append(('WNAM', int.from_bytes(bytes(sub.data)[:4], 'little'), "First-person"))
+    elif asset.sig == 'BOOK':
+        sub = asset.record.get_subrecord('INAM')
+        if sub is not None and len(sub.data) >= 4:
+            refs.append(('INAM', int.from_bytes(bytes(sub.data)[:4], 'little'), "Inventory"))
+    elif asset.sig == 'ARMO':
+        refs = [('MODL', int.from_bytes(bytes(s.data), 'little'), "Armor addon")
+                for s in asset.record.subrecords if s.signature == 'MODL' and len(s.data) == 4]
+    for ref_sig, raw, kind in refs:
+        linked = by_fid.get(model.absid(asset.record.plugin, raw))
+        if linked is None:
+            continue
+        for sig, rel in linked.models:
+            label = LABELS.get((linked.sig, sig), f"Model ({sig})")
+            out.append(ModelEntry(linked, sig, rel, f"{kind} {linked.edid}: {label}".replace('  ', ' '), asset, ref_sig))
+    return out
+
+
+def replace_model(model, plugin_path, entry, dest, name, editor_id=None, dirs=(), archives=None, data_dir=None):
+    """Replace one NIF of a record with your own copy (named `name`, textures in Textures\\<dest>\\<name>).
+
+    The record holding the path is edited in place when it is yours or is the record itself; a master's linked record
+    (a vanilla first-person STAT or armor addon) is cloned as `editor_id` and the parent is pointed at the clone, so
+    other items sharing it are unaffected. Returns the editor ID of the record that was changed or created.
+    """
+    from dataclasses import replace as clone_asset
+    plugin_path = Path(plugin_path)
+    one = clone_asset(entry.holder, models=[(entry.sig, entry.rel)])
+    if entry.parent is None or entry.holder.owned:
+        return duplicate_asset(model, plugin_path, one, dest, None, dirs, archives, data_dir, 'repoint', name)['record']
+    edid = editor_id or f"{entry.holder.edid or entry.holder.sig}_{name}"
+    duplicate_asset(model, plugin_path, one, dest, edid, dirs, archives, data_dir, 'clone', name)
+    _point_reference(model, plugin_path, entry.parent, entry.ref_sig, entry.holder.fid, edid, data_dir)
+    return edid
+
+
+def _point_reference(model, plugin_path, parent, ref_sig, old_fid, new_edid, data_dir):
+    from esplib import Plugin
+    from tools.npcs.npc_builder import NpcBuilder
+    if not parent.owned:
+        _override(NpcBuilder(model, plugin_path.parent, data_dir), parent, plugin_path)
+    plugin = Plugin.load(str(plugin_path))
+    new = next(r for r in plugin.records if r.editor_id == new_edid)
+    rec = next(r for r in plugin.records if r.signature == parent.sig and
+               (r.form_id.value & 0xFFFFFF) == (parent.fid & 0xFFFFFF))
+    for s in rec.subrecords:
+        if s.signature == ref_sig and len(s.data) == 4 and \
+                (int.from_bytes(bytes(s.data), 'little') & 0xFFFFFF) == (old_fid & 0xFFFFFF):
+            s.data = new.form_id.value.to_bytes(4, 'little')
+    rec.modified = True
+    plugin.save(str(plugin_path))
+
+
 def give_first_person(model, assets, plugin_path, weapon, dest, dirs=(), archives=None, data_dir=None):
     """Give a weapon its own copy of the first-person model (what shows when you hold it in first person).
 
@@ -263,19 +352,21 @@ def give_first_person(model, assets, plugin_path, weapon, dest, dirs=(), archive
         mapping = {}
         for tex in nif_tools.texture_paths(nif):
             name = tex.replace('/', '\\').rsplit('\\', 1)[-1].lower()
-            if (own / name).is_file():
-                mapping[norm(tex)] = f'textures\\{dest}\\{name}'
+            found = next((f for f in own.rglob('*') if f.is_file() and f.name.lower() == name), None) \
+                if own.is_dir() else None
+            if found:
+                mapping[norm(tex)] = 'textures\\' + str(found.relative_to(plugin_dir / 'Textures')).replace('/', '\\')
         if mapping:
             mesh.write_bytes(nif_tools.replace_textures(nif, mapping))
     if extra.is_dir():
-        used = {t.replace('/', '\\').rsplit('\\', 1)[-1].lower() for m in (plugin_dir / 'Meshes' / f'{dest}_1P').glob('*.nif')
-                for t in nif_tools.texture_paths(nif_tools.parse(m.read_bytes()))
-                if norm(t).startswith(f'textures\\{dest.lower()}_1p\\')}
-        for f in list(extra.iterdir()):
-            if f.name.lower() not in used:
+        used = {norm(t) for m in (plugin_dir / 'Meshes' / f'{dest}_1P').glob('*.nif')
+                for t in nif_tools.texture_paths(nif_tools.parse(m.read_bytes()))}
+        for f in list(extra.rglob('*')):
+            if f.is_file() and norm('textures\\' + str(f.relative_to(plugin_dir / 'Textures')).replace('/', '\\')) not in used:
                 f.unlink()
-        if not any(extra.iterdir()):
-            extra.rmdir()
+        for d in sorted((p for p in extra.rglob('*') if p.is_dir()), reverse=True) + [extra]:
+            if not any(d.iterdir()):
+                d.rmdir()
 
     snapshot(plugin_path, 'pre_first_person')
     if not weapon.owned:

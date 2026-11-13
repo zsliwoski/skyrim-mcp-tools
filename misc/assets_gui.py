@@ -82,8 +82,22 @@ class App(tk.Tk):
         self.tree.pack(fill='both', expand=True)
         self.tree.bind('<<TreeviewSelect>>', self.on_select)
 
-        right = ttk.Frame(body)
-        body.add(right, weight=2)
+        holder = ttk.Frame(body)
+        body.add(holder, weight=2)
+        canvas = tk.Canvas(holder, highlightthickness=0, width=PREVIEW + 30)
+        vbar = ttk.Scrollbar(holder, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        right = ttk.Frame(canvas)
+        window = canvas.create_window(0, 0, window=right, anchor='nw')
+        right.bind('<Configure>', lambda _: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(window, width=e.width))
+
+        def wheel(e):
+            if right.winfo_height() > canvas.winfo_height() and not isinstance(e.widget, (tk.Listbox, ttk.Treeview)):
+                canvas.yview_scroll(-1 if e.delta > 0 else 1, 'units')
+        self.bind_all('<MouseWheel>', wheel, add='+')
         self.mesh = self.pane(right, PREVIEW, "Select a record")
         self.mesh.bind('<ButtonPress-1>', self.start_drag)
         self.mesh.bind('<B1-Motion>', self.do_drag)
@@ -103,8 +117,9 @@ class App(tk.Tk):
         row2 = ttk.Frame(right)
         row2.pack(fill='x', pady=(4, 0))
         ttk.Button(row2, text="First-person model...", command=self.first_person).pack(side='left')
-        ttk.Button(row2, text="Replace texture...", command=self.replace).pack(side='left', padx=4)
-        ttk.Button(row2, text="Open folder", command=self.open_folder).pack(side='left')
+        ttk.Button(row2, text="All models...", command=self.models).pack(side='left', padx=4)
+        ttk.Button(row2, text="Replace texture...", command=self.replace).pack(side='left')
+        ttk.Button(row2, text="Open folder", command=self.open_folder).pack(side='left', padx=4)
         self.detail = ttk.Label(right, text="", wraplength=440, justify='left')
         self.detail.pack(fill='x', pady=4)
 
@@ -259,8 +274,12 @@ class App(tk.Tk):
         dest = tk.StringVar(value=self.plugin.stem.replace(' ', '_'))
         edid = tk.StringVar(value=f"{a.edid or a.sig}_Copy")
         mode = tk.StringVar(value='clone')
+        mname = tk.StringVar(value=Path(a.models[0][1].replace('\\', '/')).stem if a.models else '')
         ttk.Label(win, text="Folder for the copies (Meshes\\<name>, Textures\\<name>):").pack(anchor='w', padx=8, pady=(8, 0))
         ttk.Entry(win, textvariable=dest, width=40).pack(padx=8, fill='x')
+        ttk.Label(win, text="Model name (the copy is Meshes\\<folder>\\<name>.nif, its textures go in Textures\\<folder>\\<name>):"
+                  ).pack(anchor='w', padx=8, pady=(8, 0))
+        ttk.Entry(win, textvariable=mname, width=40).pack(padx=8, fill='x')
         ttk.Radiobutton(win, text="Clone the record (new editor ID below)", variable=mode, value='clone').pack(
             anchor='w', padx=8, pady=(8, 0))
         ttk.Entry(win, textvariable=edid, width=40).pack(padx=28, fill='x')
@@ -271,17 +290,17 @@ class App(tk.Tk):
 
         def go():
             win.destroy()
-            self.run_duplicate(a, dest.get().strip(), mode.get(), edid.get().strip())
+            self.run_duplicate(a, dest.get().strip(), mode.get(), edid.get().strip(), mname.get().strip() or None)
         ttk.Button(win, text="Duplicate", command=go).pack(pady=8)
         win.grab_set()
 
-    def run_duplicate(self, a, dest, mode, edid):
+    def run_duplicate(self, a, dest, mode, edid, model_name=None):
         self.status.config(text="Duplicating...")
 
         def work():
             try:
                 res = am.duplicate_asset(self.model, self.plugin, a, dest, edid if mode == 'clone' else None, self.dirs(),
-                                         self.archives, DATA_DIR if DATA_DIR.is_dir() else None, mode)
+                                         self.archives, DATA_DIR if DATA_DIR.is_dir() else None, mode, model_name)
                 self.calls.put(lambda: self.duplicated(res, a, mode))
             except Exception as e:
                 self.calls.put(lambda: (self.status.config(text="Duplicate failed"),
@@ -330,6 +349,71 @@ class App(tk.Tk):
                     "First person", f"{a.edid} now uses {edid} in first person. Use Install to Data.")))
             except Exception as e:
                 self.calls.put(lambda: (self.status.config(text="Failed"), messagebox.showerror("First person", str(e))))
+        threading.Thread(target=work, daemon=True).start()
+
+    def models(self):
+        a = self.current()
+        if a is None or self.plugin is None:
+            return
+        entries = am.model_entries(self.model, self.assets, a)
+        if not entries:
+            messagebox.showinfo("Models", "This record has no model paths.")
+            return
+        win = tk.Toplevel(self)
+        win.title(f"All models - {a.edid or a.sig}")
+        win.geometry("820x360")
+        tree = ttk.Treeview(win, columns=('path', 'where'), selectmode='browse', height=8)
+        tree.heading('#0', text="Model")
+        tree.heading('path', text="Path")
+        tree.heading('where', text="Source")
+        tree.column('#0', width=260)
+        tree.column('path', width=380)
+        tree.column('where', width=90, stretch=False)
+        mine = self.plugin.parent / 'Meshes'
+        for n, e in enumerate(entries):
+            where = "your copy" if (mine / am.strip_dir(e.rel, 'meshes')).is_file() else "original"
+            tree.insert('', 'end', iid=str(n), text=e.label, values=(e.rel, where))
+        tree.pack(fill='both', expand=True, padx=6, pady=6)
+        dest = tk.StringVar(value=self.plugin.stem.replace(' ', '_'))
+        name = tk.StringVar()
+        edid = tk.StringVar()
+        form = ttk.Frame(win)
+        form.pack(fill='x', padx=6)
+        for r, (text, var) in enumerate((("Folder", dest), ("Model name", name),
+                                         ("Editor ID (only if a linked record must be cloned)", edid))):
+            ttk.Label(form, text=text).grid(row=r, column=0, sticky='w')
+            ttk.Entry(form, textvariable=var, width=36).grid(row=r, column=1, sticky='w', padx=6)
+
+        def selected(_=None):
+            sel = tree.selection()
+            if sel:
+                e = entries[int(sel[0])]
+                name.set(Path(e.rel.replace('\\', '/')).stem)
+                edid.set('' if e.parent is None or e.holder.owned else f"{e.holder.edid or e.holder.sig}_Copy")
+        tree.bind('<<TreeviewSelect>>', selected)
+
+        def go():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showinfo("Models", "Select a model first.", parent=win)
+                return
+            e = entries[int(sel[0])]
+            win.destroy()
+            self.run_replace_model(e, dest.get().strip(), name.get().strip(), edid.get().strip() or None)
+        ttk.Button(win, text="Replace selected with a copy", command=go).pack(pady=8)
+
+    def run_replace_model(self, entry, dest, name, edid):
+        self.status.config(text="Copying model...")
+
+        def work():
+            try:
+                rec = am.replace_model(self.model, self.plugin, entry, dest, name, edid, self.dirs(), self.archives,
+                                       DATA_DIR if DATA_DIR.is_dir() else None)
+                self.calls.put(lambda: (self.load(self.plugin), messagebox.showinfo(
+                    "Models", f"{entry.label}: now uses Meshes\\{dest}\\{name}.nif (record {rec}). "
+                              f"Use Install to Data so the game sees it.")))
+            except Exception as e:
+                self.calls.put(lambda: (self.status.config(text="Failed"), messagebox.showerror("Models", str(e))))
         threading.Thread(target=work, daemon=True).start()
 
     def use_model(self):
@@ -393,7 +477,8 @@ class App(tk.Tk):
             parents[depth] = tree.insert(parent, 'end', iid=str(n), open=True, text=f"{typ}  {name}".strip(),
                                          values=(i, detail), tags=tag)
         tree.tag_configure('shape', foreground='#0a6')
-        ttk.Label(win, text="Green shapes can be exported/imported (unrigged BSTriShape). Importing rewrites the mesh "
+        ttk.Label(win, text="Green shapes can be exported/imported. For rigged (skinned) shapes the bone weights are copied "
+                            "from the nearest original vertex (no new bones). Importing rewrites the mesh "
                             "file in this plugin's Meshes folder, so Duplicate it first.", wraplength=720).pack(anchor='w', padx=6)
         row = ttk.Frame(win)
         row.pack(fill='x', padx=6, pady=6)

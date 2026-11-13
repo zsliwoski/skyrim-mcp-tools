@@ -25,7 +25,8 @@ How to read, author and debug dialogue with the `skyrim-mcp-tools` MCP server.
 Dialogue goes in the `dialogue` list of `create_npc`, `edit_npc` (existing NPC, e.g. `Nevs`) or `add_npc_dialogue` (draft). Each entry:
 - `kind`: `topic`, `greeting` or `goodbye`. A topic needs a `prompt`.
 - `lines`: the NPC's reply, or several lines spoken in sequence as one reply; plain text, Windows-1252 only.
-- `answers` (instead of `lines`): several alternative replies to the same prompt, e.g. `[["Rumor one."], ["Rumor two."]]`, written as several responses under one topic. `pick` is `random` (default) or `in_order` (each once, last repeats). Not combinable with `give_items`/`code`. See `skyrim-group-banter`.
+- `answers` (instead of `lines`): several alternative replies to the same prompt, e.g. `[["Rumor one."], ["Rumor two."]]`, written as several responses under one topic. `pick` is `random` (default) or `in_order` (each once, last repeats). Combinable with `give_items`/`code`, which run after whichever answer plays. See `skyrim-group-banter`.
+- `blocking`: `true` makes a prompt-less topic in a blocking branch (while its conditions hold, only its `child_of` follow-ups are offered, like vanilla favor mode). `child_of`: index of an earlier topic entry in the same `dialogue` list; the topic is offered only after that entry's reply instead of in the menu. `goodbye`: `true` sets the INFO "Goodbye" flag so the conversation closes after the reply (vanilla does this for Wait, Follow, Dismiss, favor start, Yes and No). See `skyrim-followers`.
 - `give_items`: items the player receives when the line ends, as ids or `{"item", "count"}`.
 - `code` and `properties`: Papyrus statements run when the line ends, and a `{name: form}` map usable as `Form` properties in that code.
 

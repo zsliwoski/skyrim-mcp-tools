@@ -39,7 +39,7 @@ Before writing lines, fill in a small web and keep it consistent across every NP
 - Greeting or goodbye lines may carry a one-line mood note, but rarely.
 
 ## Multiple answers from one NPC
-An entry takes either `lines` (spoken in sequence as **one** reply) or `answers`: a list of alternative replies, each a list of lines, written as several responses under **one** topic. `pick` is `"random"` (default, any answer each time, like vanilla rumors) or `"in_order"` (each answer once in order, then the last repeats, good for a story that unfolds; make the last answer a good fallback). `answers` cannot be combined with `give_items`/`code`.
+An entry takes either `lines` (spoken in sequence as **one** reply) or `answers`: a list of alternative replies, each a list of lines, written as several responses under **one** topic. `pick` is `"random"` (default, any answer each time, like vanilla rumors) or `"in_order"` (each answer once in order, then the last repeats, good for a story that unfolds; make the last answer a good fallback). `answers` can be combined with `give_items`/`code`; they run after whichever answer plays.
 1. **Rumors:** one `Heard any rumors around here?` entry with 3 to 5 `answers` per NPC, each 1 to 2 sentences. A long answer can use several lines (spoken in sequence).
 2. **Opinions** about a colleague: 2 or 3 `answers` at most, or a single `lines` reply.
 3. Never repeat an identical prompt for the same NPC in separate entries; use `answers` instead.

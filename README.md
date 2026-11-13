@@ -195,9 +195,15 @@ python misc/voice_lines_gui.py path\to\Plugin.esp
   with a text filter and a "Missing audio only" toggle. Audio is found as loose files (output folder, then Data)
   and inside BSAs (the plugin's own archive and any `*voices*` archive in Data).
 - **Play** plays `.wav` directly and decodes `.fuz`/`.xwm` (including from BSAs) through ffmpeg.
-- **Record** captures the microphone to a 16-bit mono 44.1 kHz WAV; **Upload audio...** copies in a `.wav`, `.fuz` or
-  `.xwm`, or converts `.mp3`/`.ogg`/`.flac`/`.m4a` to WAV.
-- **To .fuz** / **All WAVs to .fuz** generate lip sync from the line text, encode xWMA, and pack a `.fuz`
+- **Record** captures the microphone to a 16-bit mono 44.1 kHz WAV; the dropdown beside it picks the input device
+  (system default or any recording device, re-scanned when opened so a newly plugged-in mic appears).
+  **Upload audio...** copies in a `.wav`, `.fuz` or `.xwm`, or converts `.mp3`/`.ogg`/`.flac`/`.m4a` to WAV.
+- **Volume / pitch**: **Adjust selected** / **Adjust all lines** change the volume (dB) and pitch (semitones, length kept so
+  lip sync still fits) of the plugin's loose voice files. `.fuz`/`.xwm` are re-encoded (needs `xwmaencode`, below).
+  The original is saved once to `<plugin folder>\voice_originals\` (not packaged); **Restore selected originals** /
+  **Restore all originals** bring it back. Re-recording or uploading a line discards its saved original.
+- The line list supports multi-select (Ctrl/Shift-click); the "selected" buttons act on every selected line.
+- **Selected to .fuz** / **All WAVs to .fuz** generate lip sync from the line text, encode xWMA, and pack a `.fuz`
   (the WAV is then removed), so the line lip-syncs in game. A loose WAV also plays in Skyrim SE but with a still face.
 - **New voice type...** adds a VTYP record to the plugin (after a snapshot) and can assign it to the line's speaker
   NPCs that are defined in the plugin.
@@ -206,6 +212,11 @@ python misc/voice_lines_gui.py path\to\Plugin.esp
   Apply snapshots the plugin first (`pre_dialogue_edit`). Changing text doesn't change the audio, so re-record or
   re-convert the line. Localized plugins (string tables) can't be text-edited, and an animation must come from the
   plugin itself or one of its masters.
+- **Suggest** fills the emotion fields from the line text using [NRCLex](https://pypi.org/project/NRCLex/) (review,
+  then Apply). **Suggest for selected** / **Suggest for all Neutral** set an emotion on the selected (or every) editable line still at Neutral, after a
+  confirmation and one `pre_emotion_suggest` snapshot; lines that already have an emotion are untouched. It is a
+  word-lookup guess (anger, disgust, fear, sad, happy, surprise; a question with no emotional words becomes Puzzled),
+  so it misses sarcasm and negation. Needs `pip install nrclex` (optional).
 - **Pack zip** runs `package_plugin`; **Install to Data** copies the plugin and its files into Data.
 
 Voice files are written to `<plugin folder>\Sound\Voice\<Plugin.esp>\<voice type>\<quest>_<topic>_<info id>_<n>`
@@ -213,9 +224,9 @@ using the Creation Kit naming (quest cut to 10 characters, topic to 15, load-ord
 `package_plugin`, `install_plugin` and `validate_plugin` include the `Sound` folder for the plugin.
 
 Requirements:
-- Windows (microphone recording uses the built-in MCI API; playback uses `winsound`), and Python's `tkinter`.
+- Windows (microphone recording uses the built-in waveIn API; playback uses `winsound`), and Python's `tkinter`.
 - Skyrim SE `Data` folder (`SKYRIM_DATA_DIR`) for masters and existing audio.
-- ffmpeg on `PATH` for playing `.fuz`/`.xwm` and for converting non-WAV uploads. Plain WAV needs nothing extra.
+- ffmpeg on `PATH` for playing `.fuz`/`.xwm`, converting non-WAV uploads and adjusting volume/pitch. Plain WAV needs nothing extra.
 - For `.fuz` conversion: the Skyrim SE `Tools` folder next to `Data` (installed with the Creation Kit), containing
   `Audio\xwmaencode.exe`, `LipGen\LipGenerator\LipGenerator.exe` (with `FonixData.cdf`) and
   `LipGen\LipFuzer\LIPFuzer.exe`. Set `SKYRIM_TOOLS_DIR` if it lives elsewhere. Lip sync is generated for English.
@@ -235,7 +246,8 @@ python misc/assets_gui.py path\to\Plugin.esp
 - Selecting a record previews the mesh textured with its diffuse maps (UV-mapped; untick to see plain shading, drag to
   rotate) and lists the textures its NIF names; selecting a texture previews it. Skinned armor is previewed too. DDS
   formats Pillow can't decode show "Can't preview" and render grey.
-- **Duplicate...** copies the NIF to `Meshes\<folder>\`, every texture it names to `Textures\<folder>\`, and rewrites
+- **Duplicate...** copies the NIF to `Meshes\<folder>\<model name>.nif` (you choose the name; it defaults to the
+  original's), every texture it names to `Textures\<folder>\<model name>\`, and rewrites
   the texture paths inside the copied NIF. Then, your choice: **clone** the record under a new editor ID (works for
   master records too), **repoint** the record itself (for a master's record this adds an override), or **files only**,
   which leaves every record alone. TXST records get their `TX00`-`TX07` paths repointed. A snapshot is taken first
@@ -243,10 +255,19 @@ python misc/assets_gui.py path\to\Plugin.esp
 - **Pack zip** / `package_plugin` include the loose meshes and textures the plugin's records use (model paths, texture
   sets, and textures named inside those meshes), not just FaceGen files.
 - **Replace texture...** overwrites a texture in the plugin's own `Textures` folder with another `.dds`.
-- **Mesh structure...** shows the NIF's node/shape hierarchy with each shape's shader and textures. Unrigged
-  `BSTriShape`s can be exported to `.obj` (one shape or all) and a shape can be replaced from an `.obj`; the shape keeps
-  its shader, textures and vertex format, and normals/tangents are rebuilt. Rigged (skinned) shapes are skipped. Import
-  edits the mesh in the plugin's own `Meshes` folder, so duplicate it first.
+- **All models...** lists every NIF a record uses: its own models (a weapon's world model, an armor's male/female
+  models) plus those of records it points to (a weapon's first-person STAT, an armor's armor addons). Pick one, choose
+  a folder and model name, and only that NIF is copied (with its textures) and repointed. A master's linked record is
+  cloned (you give the editor ID) and the weapon/armor is pointed at the clone, so other items sharing the vanilla
+  record are unaffected.
+- **Mesh structure...** shows the NIF's node/shape hierarchy with each shape's shader and textures. `BSTriShape`s can be
+  exported to `.obj` (one shape or all) and a shape can be replaced from an `.obj`; the shape keeps its shader,
+  textures and vertex format, and normals/tangents are rebuilt. Rigged (skinned) shapes, such as armor, work too: the
+  skeleton, bind pose and body-part slots are kept and each new vertex copies its bone weights from the nearest
+  original vertex, so reshaping armor works but new bones can't be added. Import edits the mesh in the plugin's own
+  `Meshes` folder, so duplicate it first. Only Skyrim SE meshes (`BSTriShape`, plain triangle lists) are handled:
+  Skyrim LE meshes (`NiTriShape`/`NiTriStrips`) aren't listed as editable, and a skin partition stored as triangle
+  strips is rejected with an error. Convert LE meshes to SE first (Cathedral Assets Optimizer or NifSkope).
 - **Use another model...** / **First-person model...** repoint a record at one of your copies, or give a weapon its own
   first-person model. They also detach a weapon/armor's template record (`CNAM`/`TNAM`), whose model would otherwise win.
 - Only `BSShaderTextureSet` paths are rewritten; effect-shader textures (`BSEffectShaderProperty`) and alternate

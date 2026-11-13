@@ -96,8 +96,8 @@ def test_duplicate_model_clones_record_and_copies_files(mod):
     res = am.duplicate_asset(model, mod, rows["ThingStatic"], "Mine", "MyStatic", dirs=[mod.parent])
     folder = mod.parent
     nif = nif_tools.parse((folder / "Meshes" / "Mine" / "thing.nif").read_bytes())
-    assert nif_tools.texture_paths(nif) == ["textures\\Mine\\thing_d.dds", "textures\\Mine\\thing_n.dds"]
-    assert (folder / "Textures" / "Mine" / "thing_d.dds").read_bytes() == b"DIFFUSE"
+    assert nif_tools.texture_paths(nif) == ["textures\\Mine\\thing\\thing_d.dds", "textures\\Mine\\thing\\thing_n.dds"]
+    assert (folder / "Textures" / "Mine" / "thing" / "thing_d.dds").read_bytes() == b"DIFFUSE"
     assert (folder / "Textures" / "orig" / "Thing_d.dds").exists()  # the original is untouched
     assert res["record"] == "MyStatic" and not res["warnings"]
     plugin = Plugin.load(str(mod))
@@ -105,6 +105,26 @@ def test_duplicate_model_clones_record_and_copies_files(mod):
     assert zs(recs["MyStatic"].get_subrecord("MODL").data) == "Mine\\thing.nif"
     assert recs["MyStatic"].get_subrecord("MODT") is None
     assert zs(recs["ThingStatic"].get_subrecord("MODL").data) == "orig\\Thing.nif"
+
+
+def test_every_nif_of_a_weapon_is_listed_and_replaced_individually(mod):
+    plugin = Plugin.load(str(mod))
+    weap = Record("WEAP", FormID(0x802), 0)
+    weap.add_subrecord("EDID", z("ThingWeapon"))
+    weap.add_subrecord("MODL", z("orig\\Thing.nif"))
+    weap.add_subrecord("WNAM", (0x800).to_bytes(4, "little"))
+    plugin.add_record(weap)
+    plugin.save(str(mod))
+    model, rows = am.load_assets(mod)
+    weapon = next(a for a in rows if a.edid == "ThingWeapon")
+    entries = am.model_entries(model, rows, weapon)
+    assert [(e.holder.edid, e.sig) for e in entries] == [("ThingWeapon", "MODL"), ("ThingStatic", "MODL")]
+    assert entries[0].label.startswith("World") and entries[1].label.startswith("First-person")
+    am.replace_model(model, mod, entries[1], "Mine", "Held", dirs=[mod.parent])
+    recs = {r.editor_id: r for r in Plugin.load(str(mod)).records}
+    assert zs(recs["ThingStatic"].get_subrecord("MODL").data) == "Mine\\Held.nif"
+    assert zs(recs["ThingWeapon"].get_subrecord("MODL").data) == "orig\\Thing.nif"
+    assert (mod.parent / "Textures" / "Mine" / "Held" / "thing_d.dds").is_file()
 
 
 def test_first_person_model_reuses_custom_textures(mod):
@@ -124,8 +144,8 @@ def test_first_person_model_reuses_custom_textures(mod):
     recs = {r.editor_id: r for r in Plugin.load(str(mod)).records}
     assert recs["ThingWeapon"].get_subrecord("WNAM").data == recs["ThingWeapon_1P"].form_id.value.to_bytes(4, "little")
     nif = nif_tools.parse((mod.parent / "Meshes" / "Mine_1P" / "thing.nif").read_bytes())
-    assert nif_tools.texture_paths(nif) == ["textures\\Mine\\thing_d.dds", "textures\\Mine_1P\\thing_n.dds"]
-    assert not (mod.parent / "Textures" / "Mine_1P" / "thing_d.dds").exists()
+    assert nif_tools.texture_paths(nif) == ["textures\\Mine\\thing_d.dds", "textures\\Mine_1P\\thing\\thing_n.dds"]
+    assert not (mod.parent / "Textures" / "Mine_1P" / "thing" / "thing_d.dds").exists()
 
 
 def test_outline_lists_the_shape_and_obj_round_trips_with_new_geometry():
@@ -141,6 +161,46 @@ def test_outline_lists_the_shape_and_obj_round_trips_with_new_geometry():
     assert nif_tools.texture_paths(new) == TEX
     with pytest.raises(nif_tools.ObjError):
         nif_tools.import_obj(nif, 0, "o A\nv 0 0 0\n")
+
+
+def build_rigged_nif():
+    """A skinned BSTriShape (vertices 0 and 1 bound to bones 5 and 7) with its skin instance and partition."""
+    desc = 7 | (1 << 44 | 64 << 44)
+    shape = bytearray(tri_shape()[:100] + struct.pack("<QHHI", desc, 0, 0, 0))
+    struct.pack_into("<i", shape, 88, 1)  # skin ref, just after the 16-byte bounding sphere
+    verts = b"".join(struct.pack("<3f", *v) + bytes(4) + struct.pack("<4e", 1, 0, 0, 0) + bytes([b, 0, 0, 0])
+                     for v, b in (((0, 0, 0), 5), ((1, 0, 0), 7), ((0, 1, 0), 7)))
+    tri = struct.pack("<3H", 0, 1, 2)
+    part = struct.pack("<IIIQ", 1, len(verts), 28, desc) + verts
+    part += struct.pack("<5H", 3, 1, 2, 0, 4) + struct.pack("<2H", 5, 7)
+    part += b"\1" + struct.pack("<3H", 0, 1, 2) + b"\1" + struct.pack("<12f", *([1, 0, 0, 0] * 3))
+    part += b"\1" + tri + b"\1" + bytes([0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
+    part += bytes(2) + struct.pack("<Q", desc) + tri
+    blocks = [("BSTriShape", bytes(shape)), ("BSDismemberSkinInstance", struct.pack("<ii", -1, 2)),
+              ("NiSkinPartition", part)]
+    kinds = sorted({n for n, _ in blocks})
+    h = b"Gamebryo File Format, Version 20.2.0.7\n" + struct.pack("<IBIII", 0x14020007, 1, 12, len(blocks), 100)
+    h += b"\x00\x00\x00" + struct.pack("<H", len(kinds))
+    h += b"".join(struct.pack("<I", len(n)) + n.encode() for n in kinds)
+    h += b"".join(struct.pack("<H", kinds.index(n)) for n, _ in blocks)
+    h += struct.pack("<3I", *(len(d) for _, d in blocks)) + struct.pack("<III", 0, 0, 0)
+    return h + b"".join(d for _, d in blocks) + struct.pack("<I", 0)
+
+
+def test_rigged_shape_exports_and_imports_with_weights_copied_from_nearest_vertex():
+    nif = nif_tools.parse(build_rigged_nif())
+    assert nif_tools.editable_shapes(nif) == [(0, "Shape_0")]
+    assert len(nif_tools.read_shape(nif, 0)["verts"]) == 3
+    quad = "o Shape_0\nv 0 0 0\nv 2 0 0\nv 2 2 0\nv 0 2 0\nf 1 2 3 4\n"
+    new = nif_tools.parse(nif_tools.import_obj(nif, 0, quad))
+    assert len(nif_tools.read_shape(new, 0)["tris"]) == 2
+    _, sp = nif_tools._skin_partition(new, nif_tools._shape_head(new, 0))
+    (part,) = sp["parts"]
+    assert part["bones"] == [5, 7] and len(part["tris"]) == 2
+    vd, stride = sp["vdata"], sp["stride"]
+    assert [vd[v * stride + 24] for v in range(4)] == [5, 7, 7, 7]
+    # the rewritten partition still ends exactly where the block does
+    assert nif_tools._partition(new.block(2)[1])[0][2] == 4
 
 
 def test_use_model_detaches_weapon_template(mod):
@@ -202,8 +262,18 @@ def test_package_includes_duplicated_meshes_and_textures(mod):
     model, rows = assets(mod)
     am.duplicate_asset(model, mod, rows["ThingStatic"], "Mine", "MyStatic", dirs=[mod.parent])
     names = {n.lower() for n in package_plugin(mod)["files"]}
-    assert {"meshes/mine/thing.nif", "textures/mine/thing_d.dds", "textures/mine/thing_n.dds"} <= names
+    assert {"meshes/mine/thing.nif", "textures/mine/thing/thing_d.dds", "textures/mine/thing/thing_n.dds"} <= names
     assert "meshes/orig/thing.nif" in names  # the untouched record still uses its own mesh
+
+
+def test_duplicate_can_rename_the_model_and_textures_follow_its_name(mod):
+    model, rows = assets(mod)
+    am.duplicate_asset(model, mod, rows["ThingStatic"], "Mine", "MyStatic", dirs=[mod.parent], model_name="Golden")
+    out = mod.parent / "Meshes" / "Mine" / "Golden.nif"
+    assert nif_tools.texture_paths(nif_tools.parse(out.read_bytes()))[0] == "textures\\Mine\\Golden\\thing_d.dds"
+    assert (mod.parent / "Textures" / "Mine" / "Golden" / "thing_d.dds").is_file()
+    with pytest.raises(ValueError):
+        am.duplicate_asset(model, mod, rows["ThingStatic"], "Mine", "Other", dirs=[mod.parent], model_name="bad name")
 
 
 def test_files_only_mode_leaves_records_alone(mod):
