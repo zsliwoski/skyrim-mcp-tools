@@ -16,7 +16,7 @@ Run `lint_text(plugin=...)` after writing text (`validate_plugin` also reports l
 - **Currency**: septims or gold, never dollars.
 - **Distance**: leagues, paces, "a day's walk"; not miles, feet or meters. Time: no "o'clock"; use morning, dusk, "the third bell".
 - **Holidays**: no Christmas or Halloween; use Skyrim festivals (Sun's Dawn, Heartfires, etc.).
-- Match the speaker's voice and keep it in character (Nevs is vain and comic).
+- Match the speaker's voice and keep it in character (e.g. vain and comic).
 
 - **Books**: write prose documents of fitting length and model, not poetry or one-liners; see `skyrim-book-writing`.
 

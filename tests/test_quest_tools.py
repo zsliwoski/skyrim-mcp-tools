@@ -61,3 +61,20 @@ class TestQuests:
     def test_stage_script_needs_existing_stage(self, npc_plugin):
         assert "error" in server.add_quest_stage_script("TestSvenDialogueQuest", "TestMod.esp",
                                                        {"99": "SetStage(10)"})
+
+    def test_npc_chat_builds_scene_and_trigger(self, npc_plugin):
+        from esplib import Plugin
+        spec = {"scene_editor_id": "TestChat", "quest_editor_id": "TestChatQuest", "speaker": "TestSven",
+                "partner": "Lydia", "trigger_line": "Is that Lydia?",
+                "lines": [{"who": "speaker", "text": "Well met."}, {"who": "partner", "text": "Hm."}]}
+        res = server.add_npc_chat("TestMod.esp", spec)
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        scene = next(r for r in plug.records if r.editor_id == "TestChat")
+        assert sum(1 for s in scene.subrecords if s.signature == "DATA") == 2
+        quest = next(r for r in plug.records if r.editor_id == "TestChatQuest")
+        assert sum(1 for s in quest.subrecords if s.signature == "ALUA") == 2
+        pkg = server.package_plugin("TestMod.esp")
+        with zipfile.ZipFile(pkg["zip"]) as z:
+            assert any("TIF__TestMod_" in n for n in z.namelist())
+        assert "error" in server.add_npc_chat("TestMod.esp", spec)

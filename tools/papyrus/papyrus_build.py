@@ -90,3 +90,44 @@ def info_vmad(name, props):
     frag = VmadFragmentData(extra_bind_version=2, filename=name, flags=2,
                             fragments=[VmadFragment(script_name=name, fragment_name="Fragment_0", unknown=1)])
     return VmadData(version=5, obj_format=2, scripts=[script], fragment_data=frag).to_bytes("INFO")
+
+
+CURRENT_HIRELING = "0x000BD738"  # vanilla CurrentHireling faction in Skyrim.esm
+KEEP_UP_SECONDS = 5.0
+
+
+def keep_up_source(name, distance):
+    """Actor script that moves a hired follower next to the player when he lags more than `distance` units behind.
+
+    Skips combat, waiting (WaitingForPlayer) and anyone not in CurrentHireling.
+    """
+    return f"""Scriptname {name} Extends Actor
+
+Event OnInit()
+  RegisterForSingleUpdate({KEEP_UP_SECONDS})
+EndEvent
+
+Event OnLoad()
+  RegisterForSingleUpdate({KEEP_UP_SECONDS})
+EndEvent
+
+Event OnUpdate()
+  Actor player = Game.GetPlayer()
+  Faction hired = Game.GetFormFromFile({CURRENT_HIRELING}, "Skyrim.esm") as Faction
+  If IsInFaction(hired) && !IsDead() && !IsInCombat() && GetActorValue("WaitingForPlayer") == 0
+    If !Is3DLoaded() || GetDistance(player) > {float(distance)}
+      float behind = player.GetAngleZ() + 180.0
+      MoveTo(player, 150.0 * Math.Sin(behind), 150.0 * Math.Cos(behind), 0.0)
+    EndIf
+  EndIf
+  RegisterForSingleUpdate({KEEP_UP_SECONDS})
+EndEvent
+"""
+
+
+def npc_script_vmad(rec, name):
+    """VMAD bytes for an NPC_ record with script `name` attached (existing scripts are kept)."""
+    old = VmadData.from_record(rec, "NPC_") if rec.get_subrecord("VMAD") is not None else None
+    keep = [s for s in (old.scripts if old else []) if s.name != name]
+    return VmadData(version=5, obj_format=2, scripts=keep + [VmadScript(name=name, flags=0, properties=[])]
+                    ).to_bytes("NPC_")

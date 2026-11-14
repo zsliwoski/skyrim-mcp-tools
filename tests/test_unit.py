@@ -13,7 +13,7 @@ from tools.core.quest_model import u32
 ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_TOOLS = {
-    "add_fetch_quest", "add_npc_dialogue", "add_quest_alias", "add_quest_stage_script", "create_npc",
+    "add_fetch_quest", "add_npc_chat", "add_npc_dialogue", "add_quest_alias", "add_quest_stage_script", "create_npc",
     "create_npc_draft", "create_record", "describe_npc_fields", "edit_npc", "edit_npc_face", "edit_record",
     "get_npc", "get_npc_dialogue", "get_npc_draft", "get_npc_face", "get_quest", "get_quest_structure",
     "get_record", "get_script", "package_plugin", "paint_npc_face", "search_cells",
@@ -159,6 +159,16 @@ class TestFetchQuestSpec:
 
 
 class TestFollowerEntries:
+    def test_ambient_and_travel_entries_use_known_subtypes(self):
+        from tools.npcs import npc_builder as nb
+        hired = {'function': 'GetInFaction', 'form': 'CurrentHireling', 'op': '==', 'value': 1}
+        entries = nb.ambient_entries() + nb.travel_entries(hired)
+        assert {e['kind'] for e in entries} == {'notice_corpse', 'observe_combat', 'shout_reaction', 'idle'}
+        assert all(e['kind'] in nb.SUBTYPES for e in entries)
+        assert all(hired in e['conditions'] for e in nb.travel_entries(hired))
+        assert {c['function'] for e in nb.travel_entries(hired) for c in e['conditions']} <= set(
+            nb.CONDITION_FUNCTIONS)
+
     def test_combat_entries_use_known_subtypes(self):
         from tools.npcs import npc_builder as nb
         entries = nb.combat_entries()
@@ -219,3 +229,44 @@ class TestFollowerEntries:
         assert dismiss["conditions"] == [{"function": "GetInFaction", "form": "CurrentHireling",
                                           "op": "==", "value": 1}]
         assert "DismissFollower" in dismiss["code"]
+
+
+class TestNpcChat:
+    def spec(self, **over):
+        spec = {"scene_editor_id": "ChatA", "quest_editor_id": "ChatQuest", "speaker": "Sven", "partner": "Lydia",
+                "trigger_line": "Is that Lydia?",
+                "lines": [{"who": "speaker", "text": "Hello."}, {"who": "partner", "text": "Hi."}]}
+        spec.update(over)
+        return spec
+
+    def test_valid_spec_has_no_errors(self):
+        from tools.quests.chat_builder import check_spec
+        assert check_spec(self.spec()) == []
+
+    def test_bad_specs_are_reported(self):
+        from tools.quests.chat_builder import check_spec
+        assert any("trigger_line" in e for e in check_spec(self.spec(trigger_line="")))
+        assert any("who" in e for e in check_spec(self.spec(lines=[{"who": "x", "text": "a"}])))
+        assert any("unknown key" in e for e in check_spec(self.spec(bogus=1)))
+        assert any("scene_editor_id" in e for e in check_spec(self.spec(scene_editor_id="a b")))
+
+    def test_scene_has_one_phase_per_line_and_links_actions_to_topics(self):
+        import struct
+        from tools.quests.chat_builder import scene_record
+        rec = scene_record(0x01000800, "ChatA", 0x01000801, [0, 1], [(0, 0x01000802, 1), (1, 0x01000803, 0)])
+        sigs = [s.signature for s in rec.subrecords]
+        assert sigs.count("HNAM") == 4 and sigs.count("WNAM") == 2 and sigs.count("ALID") == 4
+        data = [bytes(s.data) for s in rec.subrecords if s.signature == "DATA"]
+        assert [struct.unpack("<I", d)[0] for d in data] == [0x01000802, 0x01000803]
+        assert bytes(rec.get_subrecord("PNAM").data) == fid_bytes(0x01000801)
+        assert [s.signature for s in rec.subrecords][-3:] == ["PNAM", "INAM", "VNAM"]
+
+    def test_trigger_guards_and_new_conditions_are_known(self):
+        from tools.npcs import npc_builder as nb
+        from tools.quests.chat_builder import trigger_conditions
+        conds = trigger_conditions(self.spec(partner_reference="Skyrim.esm:013487"))
+        assert {c["function"] for c in conds} <= set(nb.CONDITION_FUNCTIONS)
+        assert any(c["function"] == "GetDistance" and c["run_on"] == "target" for c in conds)
+        assert not any(c["function"] == "GetInFaction" for c in trigger_conditions(self.spec(hired=False)))
+        for name in ("GetDayOfWeek", "GetSitting", "IsInCombat", "IsTalking", "IsRaining", "GetIsRace"):
+            assert name in nb.CONDITION_FUNCTIONS

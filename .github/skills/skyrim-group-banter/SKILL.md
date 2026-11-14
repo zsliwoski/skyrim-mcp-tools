@@ -54,7 +54,7 @@ edit_npc("GCG_Bera", {"quest_editor_id": "GCG_Banter", "dialogue": [
      ["Wolves took a cart horse on the road to Rorikstead.", "Salt's up two septims a pound because of it."]]},
   {"kind": "topic", "prompt": "What do you make of Mirielle?",
    "lines": ["Best hands in the shop and she knows it. Never late, never loud. I only wish she'd take a day off."]}
-]}, "GemCuttersGuild.esp")
+]}, "MyGuild.esp")
 ```
 `add_npc_dialogue(draft_id, prompt=..., answers=[[...],[...]], pick="random")` does the same for drafts.
 Reuse one banter `quest_editor_id` so every topic lands in one quest. Check ids and existing topics first (`search_npcs`, `get_npc_dialogue`).

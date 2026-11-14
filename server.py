@@ -12,7 +12,7 @@ mcp = MCPServer("skyrim-mcp-tools")
 # Tools that read-modify-write plugin files. Concurrent calls (e.g. several clone_record calls in one
 # batch) would load the same file, each add a record and overwrite each other, so they run one at a time.
 WRITE_TOOLS = {
-    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'write_npc_plugin', 'create_npc',
+    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'write_npc_plugin', 'create_npc',
     'edit_npc', 'add_fetch_quest', 'add_kill_quest', 'add_plant_quest', 'add_radiant_quest', 'add_quest',
     'clone_record', 'clone_records', 'create_cell', 'make_reference_persistent', 'snapshot_plugin',
     'restore_snapshot', 'install_plugin', 'edit_text', 'edit_condition', 'edit_script', 'edit_npc_face',
@@ -362,6 +362,28 @@ def add_quest_stage_script(quest: str, target_plugin: str, stages: dict, propert
     try:
         from tools.quests.quest_edit import add_quest_stage_script as run
         res = run(npc_builder(plugins), quest, target_plugin, stages, properties)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_npc_chat(target_plugin: str, spec: dict, plugins: list[str] | None = None) -> dict:
+    """Add a scripted conversation between a follower and another NPC, started by a line the follower says.
+
+    spec: {scene_editor_id, quest_editor_id (chat quest, created if absent; each NPC gets an alias),
+    speaker (the follower), partner (the other NPC), trigger_line or trigger_lines (what the follower says
+    first), lines: [{who: "speaker"|"partner", text}], dialogue_quest_editor_id (where the trigger idle goes;
+    default <speaker>DialogueQuest), partner_reference ('Skyrim.esm:013487' placed reference of the partner,
+    gives a distance guard), distance (default 900), hired (only while following; default true),
+    random_percent (default 10), once (play one time; default true), conditions (extra, as for edit_npc)}.
+    Both NPCs must be in target_plugin or loaded plugins. Run validate_plugin, package_plugin and
+    install_plugin afterwards. One call adds one scene; call again for more topics with the same pair.
+    """
+    try:
+        from tools.quests.chat_builder import add_npc_chat as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), spec, target_plugin)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:

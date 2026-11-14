@@ -17,7 +17,8 @@ from esplib.record import GroupRecord, Record
 from esplib.utils import FormID
 
 from tools.npcs.npc_tools import AGGRESSION, ASSISTANCE, CONFIDENCE, MORALITY, SKILLS
-from tools.papyrus.papyrus_build import compile_script, info_vmad, script_name, tif_source
+from tools.papyrus.papyrus_build import (compile_script, info_vmad, keep_up_source, npc_script_vmad, script_name,
+                                         tif_source)
 from tools.core.plugin_edit import Target, hi, new_plugin, resolve_target_path
 
 FIELDS = {
@@ -88,13 +89,21 @@ FIELDS = {
     'follower': 'Hirelable follower: {"cost": gold (default 50)} or true. Adds dialogue to hire the NPC for '
                 'that gold (using the vanilla follower quest), plus wait, follow and dismiss topics. '
                 'Dialogue entries also accept "conditions": [{"function": GetItemCount|GetInFaction|'
-                'GetGlobalValue|GetStage, "form": id, "op": ==|!=|>|>=|<|<=, "value": n, '
+                'GetGlobalValue|GetStage|GetStageDone, "form": id, "op": ==|!=|>|>=|<|<=, "value": n, '
+                '"param2": integer second parameter (the stage for GetStageDone), '
                 '"run_on": "subject"|"target"}] (target is the player).',
     'combat_lines': 'true adds engine-spoken combat reactions (attack, hit grunts, taunts, flee, bleedout, '
                     'death, combat/alert transitions) with several random lines each. Also available as '
                     'dialogue kinds: attack, power_attack, bash, hit, flee, bleedout, death, block, taunt, '
                     'normal_to_combat, normal_to_alert, alert_to_combat, combat_to_normal.',
+    'ambient_lines': 'true adds engine-spoken ambient barks any NPC can have: noticing a corpse, watching a fight '
+                     'and reacting to the player shouting (kinds notice_corpse, observe_combat, shout_reaction).',
+    'travel_lines': 'true adds idle comments (kind idle) a hired companion makes on the road, in caves, ruins, '
+                    'camps and cities, conditioned on CurrentHireling. Implied by follower.',
     'quest_editor_id': 'Editor ID of the dialogue quest (default <editor_id>DialogueQuest).',
+    'keep_up': 'Hired-follower catch-up: true or {"distance": game units, default 3000}. Attaches an Actor script '
+               'that teleports him next to the player when he falls further behind while in CurrentHireling, not '
+               'in combat and not waiting. Needs the Creation Kit compiler.',
     'alias_name': 'Name of the quest alias that is filled with the NPC (default "Speaker").',
 }
 
@@ -121,8 +130,24 @@ NPC_RANK['ATKE'] = NPC_RANK['ATKD']
 
 GET_IS_ID = 72
 CONDITION_FUNCTIONS = {'GetItemCount': 47, 'GetStage': 58, 'GetInFaction': 71, 'GetGlobalValue': 74,
-                       'GetActorValue': 14, 'IsDoingFavor': 635}
-NO_PARAM_FUNCTIONS = {'IsDoingFavor'}
+                       'GetActorValue': 14, 'IsDoingFavor': 635, 'GetInCurrentLoc': 359,
+                       'GetInWorldspace': 310, 'LocationHasKeyword': 562, 'GetEquipped': 182,
+                       'GetStageDone': 59, 'GetDistance': 1, 'IsSneaking': 286, 'GetRandomPercent': 77,
+                       'IsInInterior': 300,
+                       # state of the speaker or player
+                       'GetDayOfWeek': 170, 'GetSitting': 159, 'IsInCombat': 289, 'IsTalking': 141,
+                       'IsInDialogueWithPlayer': 249, 'IsRaining': 62, 'IsSnowing': 75, 'GetCurrentTime': 18,
+                       'GetHealthPercentage': 430, 'IsRidingMount': 327, 'GetDisabled': 35,
+                       'IsTrespassing': 145, 'IsMoving': 25, 'GetDead': 46, 'IsWeaponOut': 263, 'GetLevel': 80,
+                       # take a form: quest, race, faction, voice type, spell, perk, cell, furniture, scene
+                       'GetQuestRunning': 56, 'GetQuestCompleted': 543, 'GetIsRace': 69, 'GetFactionRank': 73,
+                       'GetIsVoiceType': 426, 'HasSpell': 264, 'HasPerk': 448, 'GetInCell': 67,
+                       'IsCurrentFurnitureObj': 163, 'IsScenePlaying': 248, 'GetInSameCell': 32}
+NO_PARAM_FUNCTIONS = {'IsDoingFavor', 'IsSneaking', 'GetRandomPercent', 'IsInInterior', 'GetDayOfWeek',
+                      'GetSitting', 'IsInCombat', 'IsTalking', 'IsInDialogueWithPlayer', 'IsRaining', 'IsSnowing',
+                      'GetCurrentTime', 'GetHealthPercentage', 'IsRidingMount', 'GetDisabled', 'IsTrespassing',
+                      'IsMoving', 'GetDead', 'IsWeaponOut', 'GetLevel'}
+REFERENCE_FUNCTIONS = {'GetDistance', 'GetInSameCell'}  # param is a placed reference ('Skyrim.esm:013487')
 WAITING_FOR_PLAYER = 0x5F  # actor value the vanilla follower script sets to 1 on FollowerWait
 CONDITION_OPS = {'==': 0, '!=': 1, '>': 2, '>=': 3, '<': 4, '<=': 5}
 RUN_ON = {'subject': 0, 'target': 1}
@@ -172,6 +197,13 @@ def follower_entries(cost, base=0):
         {'kind': 'agree', 'conditions': [hired], 'answers': [["Got it."], ["Right."], ["On it."]]},
         {'kind': 'refuse', 'conditions': [hired], 'answers': [["I can't do that."], ["Not going to happen."]]},
         {'kind': 'show', 'conditions': [hired], 'answers': [["Here, take a look."], ["Found something."]]},
+        # a travelling companion's hello (the normal greetings are hidden while he is hired)
+        {'kind': 'greeting', 'conditions': [hired], 'answers': [
+            ["Yes? What's the plan?"], ["Where to next?"], ["Ready when you are."], ["Lead on."],
+            ["What do you need?"], ["Still with you."]]},
+        {'kind': 'goodbye', 'conditions': [hired], 'answers': [
+            ["Lead on."], ["I'm right behind you."], ["Whenever you're ready."], ["Onward, then."],
+            ["I'll keep up."], ["Watch your step."]]},
     ]
 SUBTYPES = {'topic': (b'CUST', b'\x00\x00\x00\x00'), 'greeting': (b'HELO', b'\x00\x07\x49\x00'),
             'goodbye': (b'GBYE', b'\x00\x07\x48\x00'),
@@ -185,7 +217,11 @@ SUBTYPES = {'topic': (b'CUST', b'\x00\x00\x00\x00'), 'greeting': (b'HELO', b'\x0
             'death': (b'DETH', b'\x00\x03\x1b\x00'), 'block': (b'BLOC', b'\x00\x03\x1d\x00'),
             'taunt': (b'TAUT', b'\x00\x03\x1e\x00'), 'normal_to_combat': (b'NOTC', b'\x00\x05\x35\x00'),
             'normal_to_alert': (b'NOTA', b'\x00\x05\x33\x00'), 'alert_to_combat': (b'ALTC', b'\x00\x05\x34\x00'),
-            'combat_to_normal': (b'COTN', b'\x00\x05\x37\x00')}
+            'combat_to_normal': (b'COTN', b'\x00\x05\x37\x00'),
+            # ambient barks the engine speaks on its own (vanilla DialogueGeneric / DialogueFollower subtypes)
+            'idle': (b'IDLE', b'\x00\x07\x58\x00'), 'notice_corpse': (b'NOTI', b'\x00\x07\x46\x00'),
+            'observe_combat': (b'OBCO', b'\x00\x07\x45\x00'), 'shout_reaction': (b'PCSH', b'\x00\x07\x57\x00')}
+INFO_IDLE_RESET = 0x0555  # reset-hours value vanilla uses on its follower idle comments
 INFO_RANDOM, INFO_SAY_ONCE = 0x2, 0x4
 COMBAT_LINES = {
     'normal_to_combat': ["You'll regret this!", "Here we go!", "Draw your weapon!"],
@@ -207,6 +243,56 @@ COMBAT_LINES = {
 def combat_entries():
     """Always-visible combat reaction lines, spoken by the engine like vanilla's generic combat dialogue."""
     return [{'kind': k, 'answers': [[x] for x in lines]} for k, lines in COMBAT_LINES.items()]
+
+
+AMBIENT_LINES = {
+    'notice_corpse': ["Gods, look at that.", "Someone's dead here.", "Poor soul."],
+    'observe_combat': ["Someone's fighting over there.", "Keep your distance.", "That looks bad."],
+    # vanilla's voice-neutral fallbacks (DialogueGeneric PCSH) plus a few that fit any voice
+    'shout_reaction': ["What was that?", "How did you do that?", "By the gods, that voice!",
+                       "Dragonborn!", "Not so loud!"],
+}
+# location keyword -> comments a travelling companion makes while the player is there
+TRAVEL_KEYWORD_LINES = {
+    'LocSetCave': ["Mind your head in here.", "It's cold and damp down here.", "I don't like caves much."],
+    'LocSetNordicRuin': ["These halls are ancient.", "Keep an eye out for draugr."],
+    'LocSetDwarvenRuin': ["Dwemer ruins. Watch for traps.", "Who built all this, I wonder?"],
+    'LocTypeDraugrCrypt': ["The dead don't rest easy here.", "I don't like the look of these tombs."],
+    'LocTypeBanditCamp': ["Bandits. Stay sharp.", "Probably more of them around."],
+    'LocTypeMine': ["Hard work, mining.", "Smells of dust and sweat in here."],
+    'LocTypeMilitaryFort': ["This fort has seen better days.", "Someone's been using this place."],
+    'LocTypeVampireLair': ["Keep your wits about you. Vampires."],
+    'LocTypeWarlockLair': ["Wizards. I'd rather not tangle with them."],
+    'LocTypeForswornCamp': ["Forsworn. They won't take kindly to us."],
+    'LocTypeDwarvenAutomatons': ["Those machines are still running. Careful."],
+}
+TRAVEL_CITY_LINES = {
+    'WhiterunLocation': ["Whiterun. Always busy."],
+    'WindhelmLocation': ["Windhelm is bitter cold."],
+    'SolitudeLocation': ["Solitude. Quite the sight."],
+    'MarkarthLocation': ["Markarth. Watch your step here."],
+    'RiftenLocation': ["Riften. Keep a hand on your purse."],
+    'FalkreathLocation': ["Falkreath. Quiet, isn't it?"],
+}
+TRAVEL_ROAD_LINES = ["Good to be on the road again.", "Where are we headed next?",
+                     "Fine day for walking.", "Long way to go yet."]
+
+
+def travel_entries(hired):
+    """Idle comments a hired companion makes on the road and in caves, ruins, camps and cities."""
+    def entry(cond, lines):
+        return {'kind': 'idle', 'conditions': [hired, cond], 'answers': [[x] for x in lines]}
+    out = [{'kind': 'idle', 'conditions': [hired], 'answers': [[x] for x in TRAVEL_ROAD_LINES]}]
+    out += [entry({'function': 'LocationHasKeyword', 'form': k, 'op': '==', 'value': 1}, v)
+            for k, v in TRAVEL_KEYWORD_LINES.items()]
+    out += [entry({'function': 'GetInCurrentLoc', 'form': k, 'op': '==', 'value': 1}, v)
+            for k, v in TRAVEL_CITY_LINES.items()]
+    return out
+
+
+def ambient_entries():
+    """Engine-spoken reactions to a dead body or a nearby fight, the default bark any NPC can have."""
+    return [{'kind': k, 'answers': [[x] for x in lines]} for k, lines in AMBIENT_LINES.items()]
 INFO_GOODBYE = 0x1
 PICK_MODES = ('random', 'in_order')
 
@@ -734,8 +820,13 @@ class NpcBuilder:
                 p.errors.append("follower: cost must be a non-negative whole number")
                 cost = 50
             entries += follower_entries(cost, len(entries))
+        if spec.get('travel_lines') or fol:
+            entries += travel_entries({'function': 'GetInFaction', 'form': 'CurrentHireling', 'op': '==',
+                                       'value': 1})
         if spec.get('combat_lines'):
             entries += combat_entries()
+        if spec.get('ambient_lines'):
+            entries += ambient_entries()
         for i, t in enumerate(entries):
             kind = t.get('kind', 'topic')
             lines = t.get('lines') or ([t['line']] if t.get('line') else [])
@@ -780,11 +871,25 @@ class NpcBuilder:
                 opts['blocking'] = True
             if t.get('goodbye'):
                 opts['goodbye'] = True
+            if t.get('say_once'):
+                opts['say_once'] = True
             if opts:
                 entry += (opts,)
             p.topics.append(entry)
         if p.topics and not (spec.get('voice_type') or p.clone):
             p.warnings.append("dialogue will have no voice audio (subtitles only)")
+
+    def reference_id(self, query):
+        """Absolute form ID of a placed reference given as 'plugin.esm:hexid' or hex (an official master is assumed
+        to be slot 0); placed references are not in the record index, so find them with search_references."""
+        q = str(query).strip()
+        file_part, _, hexpart = q.rpartition(':')
+        if not re.fullmatch(r'(0x)?[0-9a-fA-F]{1,8}', hexpart or q):
+            raise ValueError(f"{q!r}: give a reference as 'Skyrim.esm:013487' or its hex ID (see search_references)")
+        slot = self.m.slots.get(file_part.lower() or 'skyrim.esm')
+        if slot is None:
+            raise ValueError(f"{q!r}: plugin {file_part!r} is not loaded")
+        return (slot << 24) | (int(hexpart or q, 16) & 0xFFFFFF)
 
     def plan_conditions(self, p, t, i):
         """[(function index, absolute form id, operator, value, run-on)] from an entry's conditions."""
@@ -799,28 +904,36 @@ class NpcBuilder:
                 p.errors.append(f"{label}: needs function {list(CONDITION_FUNCTIONS)}, form (or actor_value "
                                 f"for GetActorValue), op {list(CONDITION_OPS)} and run_on {list(RUN_ON)}")
                 continue
+            try:
+                param2 = int(c.get('param2', 0))
+            except (ValueError, TypeError):
+                p.errors.append(f"{label}: param2 must be an integer (e.g. the stage for GetStageDone)")
+                continue
             if c.get('function') in NO_PARAM_FUNCTIONS:
-                out.append((func, 0, op, float(c.get('value', 1)), run_on))
+                out.append((func, 0, op, float(c.get('value', 1)), run_on, param2))
                 continue
             if 'actor_value' in c:
                 # actor value index, not a form; a negative id is written through unchanged
-                out.append((func, -int(c['actor_value']), op, float(c.get('value', 1)), run_on))
+                out.append((func, -int(c['actor_value']), op, float(c.get('value', 1)), run_on, param2))
                 continue
             try:
-                fid, _ = self.resolver.lookup(c['form'], list(self.m.by_sig))
+                if c.get('function') in REFERENCE_FUNCTIONS:
+                    fid = self.reference_id(c['form'])
+                else:
+                    fid, _ = self.resolver.lookup(c['form'], list(self.m.by_sig))
                 value = float(c.get('value', 1))
             except (ValueError, TypeError) as ex:
                 p.errors.append(f"{label}: {ex}")
                 continue
             p.abs_ids.add(fid)
-            out.append((func, fid, op, value, run_on))
+            out.append((func, fid, op, value, run_on, param2))
         return out
 
     def plan_script(self, p, t, i):
         """(papyrus code, [(property name, absolute form id)]) run when the line ends, or None."""
         bad = [k for k in t if k not in ('kind', 'prompt', 'line', 'lines', 'give_items', 'code', 'properties',
                                          'conditions', 'show_while_following', 'answers', 'pick', 'child_of',
-                                         'blocking', 'goodbye')]
+                                         'blocking', 'goodbye', 'say_once')]
         if bad:
             p.errors.append(f"dialogue[{i}]: unknown keys {bad}")
         code, props = [], []
@@ -1375,6 +1488,16 @@ class NpcBuilder:
         elif r['outfit_existing']:
             setsub('DOFT', fid_bytes(lc(r['outfit_existing'])))
 
+        keep_up = spec.get('keep_up')
+        if keep_up:
+            distance = float(keep_up.get('distance', 3000)) if isinstance(keep_up, dict) else 3000.0
+            sname = script_name(plugin.file_path.name, 'NPC', rec.form_id.value & 0xFFFFFF)
+            pex = compile_script(sname, keep_up_source(sname, distance), plugin.file_path.parent / 'Scripts')
+            vmad = npc_script_vmad(rec, sname)
+            rec.remove_subrecords('VMAD')
+            rec.add_subrecord('VMAD', vmad)
+            made.append({'type': 'script', 'editor_id': sname, 'object_id': str(pex)})
+
         rec.subrecords.sort(key=lambda s: NPC_RANK.get(s.signature, len(NPC_ORDER)))
         rec.modified = True
         if base is None:
@@ -1541,8 +1664,10 @@ class NpcBuilder:
             def make_info(a_lines, flags):
                 if opts.get('goodbye'):
                     flags |= INFO_GOODBYE
+                if opts.get('say_once'):
+                    flags |= INFO_SAY_ONCE
                 rec = Record('INFO', FormID(self.own(new_id())), 0)
-                rec.add_subrecord('ENAM', struct.pack('<HH', flags, 0))
+                rec.add_subrecord('ENAM', struct.pack('<HH', flags, INFO_IDLE_RESET if kind == 'idle' else 0))
                 rec.add_subrecord('CNAM', b'\x00')
                 for i, text in enumerate(a_lines, 1):
                     rec.add_subrecord('TRDT', struct.pack('<II4xB3xIB3x', 0, 50, i, 0, 1))
@@ -1550,9 +1675,10 @@ class NpcBuilder:
                     rec.add_subrecord('NAM2', b'\x00')
                     rec.add_subrecord('NAM3', b'\x00')
                 rec.add_subrecord('CTDA', condition)
-                for func, fid, op, value, run_on in extra:
+                for func, fid, op, value, run_on, *rest in extra:
+                    param2 = rest[0] if rest else 0
                     rec.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', op << 5, value, func,
-                                                          self.lid(fid), 0, run_on, 0, -1))
+                                                          self.lid(fid), param2, run_on, 0, -1))
                 return rec
             def attach_script(rec):
                 code, props = script
