@@ -78,3 +78,103 @@ class TestQuests:
         with zipfile.ZipFile(pkg["zip"]) as z:
             assert any("TIF__TestMod_" in n for n in z.namelist())
         assert "error" in server.add_npc_chat("TestMod.esp", spec)
+
+    def test_follower_controls_build_factions_packages_and_topics(self, npc_plugin):
+        from esplib import Plugin
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven"})
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        ids = {r.editor_id: r for r in plug.records if r.editor_id}
+        assert {"TestSvenFollowDistanceFaction", "TestSvenFightingStyleFaction", "TestSvenFollowerControl",
+                "TestSvenFollowClosePackage", "TestSvenFollowFarPackage"} <= set(ids)
+        pack = ids["TestSvenFollowFarPackage"]
+        floats = [bytes(s.data) for s in pack.subrecords if s.signature == "CNAM" and len(s.data) == 4]
+        assert [__import__("struct").unpack("<f", f)[0] for f in floats[:2]] == [512.0, 768.0]
+        assert sum(1 for s in pack.subrecords if s.signature == "CTDA") == 3
+        quest = ids["TestSvenFollowerControl"]
+        assert sum(1 for s in quest.subrecords if s.signature == "ALPC") == 2
+        npc = ids["TestSven"]
+        assert sum(1 for s in npc.subrecords if s.signature == "SNAM") >= 2
+        pkg = server.package_plugin("TestMod.esp")
+        with zipfile.ZipFile(pkg["zip"]) as z:
+            assert sum(1 for n in z.namelist() if "TIF__TestMod_" in n and n.endswith(".pex")) >= 6
+        assert "error" in server.add_follower_controls("TestMod.esp", {"npc": "TestSven"})
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                           "fighting_style": False, "combat_overrides": True})
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        ids = {r.editor_id: r for r in plug.records if r.editor_id}
+        assert {"TestSvenCombatCautiousPackage", "TestSvenCombatRecklessPackage",
+                "TestSvenCombatOverrideList"} <= set(ids)
+        sigs = [s.signature for s in ids["TestSvenFollowerControl"].subrecords]
+        assert sigs.count("ECOR") == 1 and sigs.index("ECOR") < sigs.index("ALPC")
+        assert sum(1 for s in ids["TestSvenCombatOverrideList"].subrecords if s.signature == "LNAM") == 2
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                           "fighting_style": False, "horse_sharing": True})
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        ids = {r.editor_id: r for r in plug.records if r.editor_id}
+        assert "TestSvenShareHorseFaction" in ids
+        quest = ids["TestSvenFollowerControl"]
+        assert any(s.signature == "VMAD" for s in quest.subrecords)
+        assert [bytes(s.data).rstrip(b"\0") for s in quest.subrecords if s.signature == "ALID"] == [b"Follower", b"Steed"]
+        assert (npc_plugin.parent / "Scripts" / "TestSvenControlScript.pex").is_file()
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                           "fighting_style": False, "horse_radar": True})
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        quest = next(r for r in plug.records if r.editor_id == "TestSvenFollowerControl")
+        assert sum(1 for s in quest.subrecords if s.signature == "VMAD") == 1
+        assert sum(1 for r in res["records"] if r["type"] == "DIAL") == 1
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                           "fighting_style": False, "horse_gift": True})
+        assert "error" not in res, res
+        assert sum(1 for r in res["records"] if r["type"] == "DIAL") == 2
+        plug = Plugin(str(npc_plugin))
+        quest = next(r for r in plug.records if r.editor_id == "TestSvenFollowerControl")
+        assert sum(1 for s in quest.subrecords if s.signature == "VMAD") == 1
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                           "fighting_style": False, "left_behind": True,
+                                                           "map_marker": True})
+        assert "error" not in res, res
+        assert sum(1 for r in res["records"] if r["type"] == "DIAL") == 3
+        plug = Plugin(str(npc_plugin))
+        ids = {r.editor_id: r for r in plug.records if r.editor_id}
+        assert "TestSvenLeftBehindFaction" in ids
+        quest = ids["TestSvenFollowerControl"]
+        sigs = [s.signature for s in quest.subrecords]
+        assert sigs.count("VMAD") == 1 and sigs.count("QOBJ") == 1 and sigs.count("QSTA") == 1
+        assert sigs.index("FULL") < sigs.index("DNAM") < sigs.index("INDX") < sigs.index("QOBJ") < sigs.index("ANAM")
+        assert b"LeftBehindFaction" in bytes(next(s for s in quest.subrecords if s.signature == "VMAD").data)
+        assert "error" in server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                                       "fighting_style": False, "map_marker": True})
+        res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                           "fighting_style": False, "summon": True})
+        assert "error" not in res, res
+        assert sum(1 for r in res["records"] if r["type"] == "DIAL") == 2
+        assert "Extends ActiveMagicEffect" in res["summon_spell"]["source"]
+        plug = Plugin(str(npc_plugin))
+        quest = next(r for r in plug.records if r.editor_id == "TestSvenFollowerControl")
+        vmad = bytes(next(s for s in quest.subrecords if s.signature == "VMAD").data)
+        assert b"SummonTopic" in vmad and b"CaughtUpTopic" in vmad and b"LeftBehindFaction" in vmad
+
+    def test_summon_needs_left_behind(self, npc_plugin):
+        assert "error" in server.add_follower_controls("TestMod.esp", {"npc": "TestSven", "follow_distance": False,
+                                                                       "fighting_style": False, "summon": True})
+
+    def test_commentary_presets_add_idle_topics(self, npc_plugin):
+        res = server.edit_npc("TestSven", {"weather_lines": True, "time_lines": True, "main_quest_lines": True,
+                                           "place_lines": True, "quest_editor_id": "TestSvenCommentQuest"},
+                              "TestMod.esp")
+        assert "error" not in res and not res.get("errors"), res
+        assert sum(1 for r in res["records"] if r["type"] == "DIAL") == 19
+        assert "error" in server.edit_npc("TestSven", {"weather_lines": True, "commentary_text": {"nope": ["x"]}},
+                                          "TestMod.esp")
+
+    def test_create_faction_and_gated_package(self, npc_plugin):
+        res = server.create_faction("TestMod.esp", "TestCtlFaction", "Control", ["A", "B"])
+        assert "error" not in res, res
+        res = server.create_package("TestMod.esp", "TestCtlPackage", conditions=[
+            {"function": "GetFactionRank", "form": "TestCtlFaction", "op": "==", "value": 1}], radii=[100, 200])
+        assert "error" not in res, res
+        assert "error" in server.create_package("TestMod.esp", "TestCtlPackage2", radii=[1, 2, 3, 4, 5, 6])

@@ -125,6 +125,235 @@ EndEvent
 """
 
 
+HORSE_RACE = "0x000131FD"  # vanilla HorseRace in Skyrim.esm
+CONTROL_TICK_SECONDS = 3.0
+
+
+LEFT_BEHIND_DISTANCE = 3500.0
+LEFT_BEHIND_TICKS = 5  # consecutive ticks too far away before he is brought back
+
+
+def controller_source(name, horse_sharing=True, left_behind=False):
+    """Quest script for a follower controller quest. Other scripts (dialogue fragments) call its functions.
+
+    Properties: Follower and Steed (ReferenceAlias), HiredFaction and ShareFaction (Faction). With horse_sharing it
+    provides ShareHorse(Actor) / StopSharing(Actor), and while the share faction rank is 1 an update loop mounts the
+    follower on the steed whenever the player is mounted and dismounts him when the player is not.
+    With left_behind (property LeftBehindFaction) the same loop notices a hired, non-waiting follower that stays out of
+    reach, moves him to the player, and sets his LeftBehindFaction rank to 1 so dialogue can react to it.
+    New controller features belong in the update loop or as more functions here.
+    """
+    head = f"Scriptname {name} Extends Quest\n\nReferenceAlias Property Follower Auto\n"
+    if horse_sharing:
+        head += "ReferenceAlias Property Steed Auto\n"
+    head += "Faction Property HiredFaction Auto\n"
+    if horse_sharing:
+        head += "Faction Property ShareFaction Auto\n"
+    if left_behind:
+        head += "Faction Property LeftBehindFaction Auto\nTopic Property CaughtUpTopic Auto\nTopic Property SummonTopic Auto\nInt lostTicks = 0\n"
+    if not (horse_sharing or left_behind):
+        return head
+    body = _HORSE_FUNCTIONS.format(tick=CONTROL_TICK_SECONDS, horse=HORSE_RACE) if horse_sharing else ""
+    if left_behind:
+        body += f"""
+; Brings a hired follower back once he has been out of reach for a while
+Function CheckLeftBehind(Actor f)
+  Actor player = Game.GetPlayer()
+  If !f.IsInFaction(HiredFaction) || f.IsDead() || f.IsInCombat() || f.GetActorValue("WaitingForPlayer") != 0
+    lostTicks = 0
+    Return
+  EndIf
+  If !f.Is3DLoaded() || f.GetDistance(player) > {LEFT_BEHIND_DISTANCE}
+    lostTicks += 1
+    If lostTicks >= {LEFT_BEHIND_TICKS}
+      lostTicks = 0
+      If f.IsOnMount()
+        f.Dismount()
+      EndIf
+      Float behind = player.GetAngleZ() + 180.0
+      f.MoveTo(player, 200.0 * Math.Sin(behind), 200.0 * Math.Cos(behind), 0.0)
+      Debug.Notification(f.GetActorBase().GetName() + " has caught up with you.")
+      React(f, CaughtUpTopic, 3, 1)
+    EndIf
+  Else
+    lostTicks = 0
+  EndIf
+EndFunction
+
+; Speaks a reaction topic while his LeftBehindFaction rank is akState (dialogue conditions read it), then sets akAfter
+Function React(Actor f, Topic akTopic, Int akState, Int akAfter)
+  If akTopic
+    f.SetFactionRank(LeftBehindFaction, akState)
+    f.Say(akTopic)
+    Utility.Wait(1.0)
+  EndIf
+  f.SetFactionRank(LeftBehindFaction, akAfter)
+EndFunction
+
+; Called by a summon spell or any other trigger: teleports a hired follower to the player and lets him react
+Function Summon()
+  Actor f = Follower.GetActorReference()
+  If !f || f.IsDead() || !f.IsInFaction(HiredFaction)
+    Return
+  EndIf
+  Actor player = Game.GetPlayer()
+  If f.IsOnMount()
+    f.Dismount()
+  EndIf
+  Float behind = player.GetAngleZ() + 180.0
+  f.MoveTo(player, 150.0 * Math.Sin(behind), 150.0 * Math.Cos(behind), 0.0)
+  React(f, SummonTopic, 2, 0)
+EndFunction
+"""
+    body += "\nEvent OnInit()\n  RegisterForSingleUpdate(" + str(CONTROL_TICK_SECONDS) + ")\nEndEvent\n\nEvent OnUpdate()\n"
+    body += "  Actor f = Follower.GetActorReference()\n  If f\n"
+    if left_behind:
+        body += "    CheckLeftBehind(f)\n"
+    if horse_sharing:
+        body += "    HorseTick(f)\n"
+    body += f"  EndIf\n  RegisterForSingleUpdate({CONTROL_TICK_SECONDS})\nEndEvent\n"
+    return head + "\n" + body
+
+
+_HORSE_FUNCTIONS = """Bool Function FindHorse(Actor akFollower)
+  Actor ride = PickHorse(akFollower, True)
+  If !ride
+    Debug.Notification("There is no horse nearby for " + akFollower.GetActorBase().GetName() + " to ride.")
+    Return False
+  EndIf
+  Steed.ForceRefTo(ride)
+  Debug.Notification(akFollower.GetActorBase().GetName() + " has picked out a horse.")
+  Return True
+EndFunction
+
+Bool Function ShareHorse(Actor akFollower)
+  Actor ride = PickHorse(akFollower, False)
+  If !ride
+    Debug.Notification("There is no horse nearby for " + akFollower.GetActorBase().GetName() + " to ride.")
+    Return False
+  EndIf
+  Steed.ForceRefTo(ride)
+  akFollower.SetFactionRank(ShareFaction, 1)
+  RegisterForSingleUpdate({tick})
+  Return True
+EndFunction
+
+Bool Function GiftHorse(Actor akFollower)
+  Actor mine = Game.GetPlayersLastRiddenHorse()
+  If !mine || mine.IsDead()
+    Debug.Notification("You have no horse to give.")
+    Return False
+  EndIf
+  mine.SetActorOwner(akFollower.GetActorBase())
+  Steed.ForceRefTo(mine)
+  akFollower.SetFactionRank(ShareFaction, 1)
+  RegisterForSingleUpdate({tick})
+  Return True
+EndFunction
+
+Function ReclaimHorse(Actor akFollower)
+  Actor ride = Steed.GetActorReference()
+  If ride
+    ride.SetActorOwner(Game.GetPlayer().GetActorBase())
+  EndIf
+  StopSharing(akFollower)
+EndFunction
+
+Function StopSharing(Actor akFollower)
+  akFollower.SetFactionRank(ShareFaction, 0)
+  If akFollower.IsOnMount()
+    akFollower.Dismount()
+  EndIf
+  Steed.Clear()
+EndFunction
+
+; The current steed if it is still alive (unless akRescan), else the closest unowned or player-owned horse
+Actor Function PickHorse(Actor akFollower, Bool akRescan)
+  Actor current = Steed.GetActorReference()
+  If current && !current.IsDead() && !akRescan
+    Return current
+  EndIf
+  Race horseRace = Game.GetFormFromFile({horse}, "Skyrim.esm") as Race
+  Actor mine = Game.GetPlayersLastRiddenHorse()
+  ActorBase playerBase = Game.GetPlayer().GetActorBase()
+  Actor best = None
+  Float bestDistance = 100000.0
+  Int tries = 0
+  While tries < 40
+    Actor found = Game.FindRandomActorFromRef(akFollower, 3000.0)
+    If found && found != mine && found != current && found.GetRace() == horseRace && !found.IsDead()
+      ActorBase owner = found.GetActorOwner()
+      If !found.GetFactionOwner() && (!owner || owner == playerBase)
+        Float d = found.GetDistance(akFollower)
+        If d < bestDistance
+          best = found
+          bestDistance = d
+        EndIf
+      EndIf
+    EndIf
+    tries += 1
+  EndWhile
+  If !best && current && !current.IsDead()
+    Return current
+  EndIf
+  Return best
+EndFunction
+
+Function HorseTick(Actor f)
+  Actor ride = Steed.GetActorReference()
+  If !ride
+    Return
+  EndIf
+  If f.GetFactionRank(ShareFaction) != 1 || !f.IsInFaction(HiredFaction)
+    If f.GetFactionRank(ShareFaction) == 1
+      StopSharing(f)
+    EndIf
+    Return
+  EndIf
+  Actor player = Game.GetPlayer()
+  If !f.IsDead() && !f.IsInCombat()
+    If player.IsOnMount() && !f.IsOnMount()
+      If ride.GetDistance(f) > 600.0
+        ride.MoveTo(f, 150.0, 0.0, 0.0)
+      EndIf
+      ride.Activate(f)
+    ElseIf !player.IsOnMount() && f.IsOnMount()
+      f.Dismount()
+    EndIf
+  EndIf
+EndFunction
+"""
+
+
+def summon_spell_source(script, controller, plugin_file, quest_object_id):
+    """ActiveMagicEffect source for a self-cast spell that calls Summon() on the controller quest's script."""
+    return (f"Scriptname {script} Extends ActiveMagicEffect\n\n"
+            "Event OnEffectStart(Actor akTarget, Actor akCaster)\n"
+            f"  Quest q = Game.GetFormFromFile({quest_object_id:#x}, \"{plugin_file}\") as Quest\n"
+            f"  (q as {controller}).Summon()\n"
+            "EndEvent\n")
+
+
+def quest_script_vmad(rec, name, object_props, alias_props):
+    """VMAD bytes attaching script `name` to a QUST (existing scripts and alias scripts are kept, a same-name script
+    is replaced but keeps properties it already had that are not given again).
+
+    object_props: [(property name, local form ID)]; alias_props: [(property name, alias ID)] bound to this quest's aliases.
+    """
+    props = [VmadProperty(name=n, type=PROP_OBJECT, flags=1, value=VmadObject(form_id=fid, alias=-1))
+             for n, fid in object_props]
+    props += [VmadProperty(name=n, type=PROP_OBJECT, flags=1,
+                           value=VmadObject(form_id=rec.form_id.value, alias=a)) for n, a in alias_props]
+    old = VmadData.from_record(rec, "QUST") if rec.get_subrecord("VMAD") is not None else None
+    keep = [s for s in (old.scripts if old else []) if s.name != name]
+    # properties set by an earlier run (e.g. topics filled in after dialogue exists) survive a rebuild
+    given = {p.name for p in props}
+    props += [p for s in (old.scripts if old else []) if s.name == name for p in s.properties if p.name not in given]
+    return VmadData(version=5, obj_format=2, scripts=keep + [VmadScript(name=name, flags=0, properties=props)],
+                    fragment_data=old.fragment_data if old else None,
+                    alias_scripts=old.alias_scripts if old else []).to_bytes("QUST")
+
+
 def npc_script_vmad(rec, name):
     """VMAD bytes for an NPC_ record with script `name` attached (existing scripts are kept)."""
     old = VmadData.from_record(rec, "NPC_") if rec.get_subrecord("VMAD") is not None else None

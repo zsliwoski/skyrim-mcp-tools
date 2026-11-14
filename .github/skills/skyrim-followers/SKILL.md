@@ -1,11 +1,35 @@
 ---
 name: skyrim-followers
-description: "Use when making a custom or existing Skyrim NPC a follower, hireling or companion: hire for gold, follow me, wait here, dismiss, DialogueFollower quest, CurrentHireling faction, SetFollower, dialogue conditions. Triggers: make X a follower, hire an NPC, NPC should follow the player, follow me topic, edit_npc follower."
+description: "Use when making a custom or existing Skyrim NPC a follower, hireling or companion: basic (vanilla style) or dynamic follower, hire for gold, follow me, wait here, dismiss, DialogueFollower quest, CurrentHireling faction, SetFollower, dialogue conditions. Triggers: make X a follower, hire an NPC, NPC should follow the player, follow me topic, edit_npc follower, upgrade a follower."
 ---
 
 # Skyrim followers
 
 Followers use the vanilla `DialogueFollower` quest (`000750BA`, script `DialogueFollowerScript`). It owns the follow package, the follower alias and the dismiss logic, so a mod only has to call it from dialogue.
+
+## Start here: basic or dynamic?
+Before building anything for a fresh follower, or before changing an existing one, use `ask_user` to ask which kind they want:
+- **Basic (vanilla style):** the hire / wait / follow / dismiss topics from "Make an NPC a hireling" below, plus optionally `travel_lines`, `combat_lines` and the context presets (immersion layers 1-3 in `skyrim-dialogue`). No controller quest or script is needed.
+- **Dynamic:** everything in basic plus the controller quest, scripts and player-adjustable topics from `add_follower_controls`, and the social and full-coverage layers (4-5).
+
+If they choose dynamic, ask a second multi-select question for the features to include, and set up the quests, scripts and topics for the chosen ones in a single pass:
+- Follow distance and fighting style (settings topics, packages, Aggression/Confidence)
+- Combat overrides (leash packages)
+- Horse sharing, horse radar and horse gifting
+- Left-behind tracking and caught-up reaction
+- Map marker
+- Summon spell and reactions (needs left-behind)
+- Context commentary: `weather_lines`, `time_lines`, `main_quest_lines`, `place_lines`
+- Scene chats with neighbours (`add_npc_chat`)
+
+Recommend the whole set when they have no preference, and mention the features marked untested in game.
+
+### Existing follower: audit first
+When the NPC already exists, do not ask what to add until you know what is there:
+1. `get_npc` and `get_npc_dialogue` for the follower: check he is in `CurrentHireling` after hiring, has hire / wait / follow / dismiss topics with the expected conditions (wait and follow on `WaitingForPlayer`), and that the other topics are hidden while hired.
+2. `validate_plugin` and `list_records` on the plugin: look for the controller quest (`<prefix>FollowerControl`), its script, the `<prefix>...Faction` records, `SummonTopic` and `CaughtUpTopic` on the script, the summon spell, and which commentary or bark topics exist. Features found here must not be offered again, and the ones the builder refuses to repeat (`map_marker`) would error.
+3. Report anything broken (missing script `.pex`, stale SEQ file, a property that is not filled in, a duplicate or unreachable topic) and offer to fix it before adding anything.
+4. Then summarise what is already present and ask the basic-or-dynamic question, showing only the features that are still missing.
 
 ## Make an NPC a hireling
 Use the `follower` field of `create_npc` or `edit_npc` (see `skyrim-dialogue` for the rest of the dialogue system):
@@ -73,6 +97,36 @@ add_npc_chat("MyPlugin.esp", {
 - Call it again with a new `scene_editor_id` for another topic with the same pair, or with another partner to build up a set of chats. Several `trigger_lines` are picked at random.
 - Both NPCs must be unique actors. The partner need not be loaded, but the scene only looks right when the partner is near, so always give `partner_reference`.
 - Run `validate_plugin`, then `package_plugin`/`install_plugin`. Untested in game.
+
+## Settings the player can change (follow distance, fighting style)
+A controller is three parts: a hidden faction whose rank is the setting, something that reads the rank, and topics that set it.
+
+`add_follower_controls(target_plugin, spec)` builds all three:
+
+```
+add_follower_controls("MyPlugin.esp", {"npc": "MyNpc"})
+```
+- A hidden `<prefix>FollowDistanceFaction` (Normal / Close / Far) and `<prefix>FightingStyleFaction` (Steady / Cautious / Reckless); the NPC joins both at rank 0.
+- Menu topics "talk about how you follow / fight" shown while hired, each with one child topic per rank (hidden while that rank is current) and a "Never mind" child. The fragments call `SetFactionRank` and `EvaluatePackage`. Fighting style also sets the `Aggression` and `Confidence` actor values. Override any line with `text: {"distance_1": ["prompt", "reply"]}`; keys are `distance_menu`, `distance_0..2`, `style_menu`, `style_0..2`, `exit`.
+- Follow distance is read by packages: a controller quest `<prefix>FollowerControl` (priority 70) has an alias for the NPC whose package list holds a Follow package per non-default rank, conditioned on that rank, hired, and `WaitingForPlayer == 0`. Normal distance falls through to the vanilla follower quest (priority 50), so Wait still works.
+- Existing saves need `startquest <prefix>FollowerControl` (or a new game) because the quest starts with the game.
+
+Building blocks, for custom controllers:
+- `create_faction(target_plugin, editor_id, name, ranks, hidden)`.
+- `create_package(target_plugin, editor_id, donor, conditions, radii, combat_style)` clones a `Skyrim.esm` package. The default donor `PlayerFollowerPackage` uses the Follow template, whose first two float parameters are the minimum and maximum follow distance; `radii` replaces them. `conditions` may name a faction made in the same plugin. A package only runs once it is on an actor, so put it on an alias package list of a quest with a priority above the vanilla follower quest.
+- Read existing packages with `list_conditions(plugin, "<package>")`, which decodes package conditions (`get_record` shows raw hex). `IsPlayerTeammate` is function 453 in the plugin data.
+- Combat overrides are packages in a FormList referenced by the alias's `ECOR`; they only run during combat. Pass `combat_overrides: true` to `add_follower_controls` to clone the vanilla override package (a hold-near-the-player location) once per non-default fighting style, with the location radius set to a leash (Cautious tight, Reckless wide) and conditioned on the style rank. It can be run alone on a plugin that already has the controls (`follow_distance` and `fighting_style` false). Untested in game. Large mods also use extra procedure trees, which the builder does not create.
+- Horse sharing: `horse_sharing: true` adds a hidden ShareHorse faction (Walks/Rides), an optional unfilled `Steed` alias on the controller quest, a quest script `<prefix>ControlScript` and two topics. "Take a horse" calls `ShareHorse(akSpeaker)`, which picks a free horse near him (not the player's last ridden one) into the Steed alias and sets the faction rank; a 3 s update loop then mounts him (`horse.Activate(follower)`) when the player is mounted and dismounts him (`Actor.Dismount()`) when the player is not, and skips combat. "Walk with me" calls `StopSharing`. Everything uses vanilla Papyrus (`GetDisplayName` is SKSE-only). Dialogue fragments call the controller with `(Control as <ScriptName>).Function()` on a Form property, so the controller script is compiled before the topics. Untested in game. Horse choice (`PickHorse`) samples 40 random actors within 3000 units, keeps those of the horse race that are alive, not the player's last-ridden horse, and have no faction owner and either no owner or the player as actor owner, then takes the closest. It cannot see whether another NPC is riding it. `horse_radar: true` adds a topic that runs this pick ahead of time (`FindHorse`) and rerunning it refreshes the controller script, so script changes reach older plugins that way.
+- The controller script is the place for future features (left-behind tracking, mount radar): add functions or extend `OnUpdate` in `controller_source`.
+- Horse gifting: `horse_gift: true` adds "take my horse" (`GiftHorse`: the player's last-ridden horse gets the follower as owner via `SetActorOwner`, joins the Steed alias and he starts riding it) and "I'd like my horse back" (`ReclaimHorse`: owner back to the player, he dismounts). Like the radar it reruns the controller script build, so it can be added to an existing plugin. Untested in game; the horse may be far away, in which case the update loop moves it next to him. Not covered yet: riding without the player.
+- Left-behind tracking: `left_behind: true` makes the controller script's 3-second update loop watch a hired follower who is not waiting and not in combat. After about 15 s out of reach (over 3500 units or 3D unloaded) he is dismounted, moved behind the player, and his `<prefix>LeftBehindFaction` rank becomes 1; a notification shows and a "Where did you get to?" topic (shown only at rank 1) resets it. Use `GetFactionRank <prefix>LeftBehindFaction == 1` as a condition on your own lines to have him comment on it. The loop starts from the quest's `OnInit`, so on an existing save run `startquest <prefix>FollowerControl` or use a new game. Untested in game.
+- Map marker: `map_marker: true` gives the controller quest a name, journal log entries and objective 10 targeting the follower alias. "I want to be able to find you on my map" sets stage 10 and displays the objective (marker on the map and compass); "You don't need to show up on my map any more" hides it (stage 20). The topics are chosen by `GetStage != 10` / `== 10`. It can only be added once per controller quest. Untested in game.
+- Summon and reactions: `summon: true` (needs `left_behind`) adds two engine-spoken `idle` topics gated on the left-behind rank (2 = summoned, 3 = caught up), wired to the controller script's `SummonTopic` and `CaughtUpTopic` properties. The script sets the rank, calls `Say` on the topic, waits, then restores the rank, so a follower who catches up now speaks too. `Summon()` dismounts him, moves him behind the player and plays the summon reaction. `summon_lines` and `caught_up_lines` replace the default lines. Whether `Say` plays a custom voice-less idle topic is unverified in game.
+  The player triggers `Summon()` with a self-cast spell. The result's `summon_spell` gives the script name and source; then (1) `create_script_effect(plugin, "<Prefix>SummonEffect", "Call <Name>", script_name, source, delivery="self")`, (2) `create_spell(plugin, "<Prefix>SummonSpell", "Call <Name>", [{"effect": "<Prefix>SummonEffect"}], kind="spell", delivery="self")`, (3) grant it from a topic with `edit_npc`: `{"kind": "topic", "prompt": "...", "line": "...", "properties": {"Summon": "<Prefix>SummonSpell"}, "code": "Game.GetPlayer().AddSpell(Summon as Spell)", "conditions": [hired, {"function": "HasSpell", "form": "<Prefix>SummonSpell", "op": "==", "value": 0, "run_on": "target"}]}` so it disappears once learned. Restart the MCP server first if the builder code changed.
+- Commentary presets: `weather_lines`, `time_lines`, `main_quest_lines` and `place_lines` on `edit_npc` add hired-gated idle comments (see `skyrim-dialogue-context`). Override lines per key with `commentary_text`. Main-quest lines are a milestone chain keyed on `GetQuestCompleted`, so only one set shows at a time.
+- Scene chats with neighbours use `add_npc_chat` (find partner references with `search_references(base=...)`); write lines that fit the follower and partner and say that each chat has a random chance to start.
+
+Studying an existing controller: `find_dependents(plugin, records=[<faction>])` lists every package, topic and quest that reads it (note: `plugin` and `records` are both required); then `list_conditions` on each package shows the rank tests, and `get_quest_structure` shows the controller quest's script and properties.
 
 ## Conditions on any dialogue entry
 `conditions` is a list of `{"function", "form", "op", "value", "run_on"}`. Functions: `GetItemCount`, `GetInFaction`, `GetGlobalValue`, `GetStage`, `GetActorValue` (give `actor_value` as an index instead of `form`), `IsDoingFavor` (no form), `GetInCurrentLoc`, `GetInWorldspace`, `LocationHasKeyword`, `GetEquipped`, `GetStageDone` (stage in `param2`). Location, travel and quest-based conditions are catalogued in `skyrim-dialogue-context`. Ops: `==  !=  >  >=  <  <=`. `run_on` is `subject` (the NPC, default) or `target` (the player). All conditions must be true, and the NPC's own `GetIsID` is always added.

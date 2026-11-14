@@ -13,10 +13,13 @@ Vanilla NPCs speak without being asked. These lines are normal INFOs with a bark
 | `combat_lines: true` | `attack`, `power_attack`, `bash`, `block`, `hit`, `taunt`, `flee`, `bleedout`, `death` and the combat/alert transitions | Fighting, grunts, jeers |
 | `ambient_lines: true` | `notice_corpse`, `observe_combat`, `shout_reaction` | Any NPC finding a body, watching a fight or hearing a shout |
 | `travel_lines: true` | `idle` gated on `CurrentHireling` | A hired companion on the road and in places (implied by `follower`) |
+| `weather_lines`, `time_lines`, `main_quest_lines`, `place_lines: true` | `idle` gated on `CurrentHireling`, not sneaking and a random throttle | Rain/snow, dawn/dusk/night, main-quest milestones, inns/shops/temples/houses/strongholds/lairs/settlements; `commentary_text` `{key: [lines]}` replaces the preset lines |
 | `follower` | `agree`, `refuse`, `show` | Favor reactions |
 | by hand | `greeting` with `conditions` | Remarks about the player |
 
 Vanilla gates many of these by voice type, so a custom voice type hears none unless the NPC carries its own lines. Whether bark text shows without audio depends on the General Subtitles setting (unverified).
+
+Depth of reaction is organised into five immersion layers (base barks, player-aware, world-aware, social scenes, full coverage); see "Immersion layers" in `skyrim-dialogue`. Pick lines that suit where the NPC lives and what they would meet.
 
 ## Conditions by situation
 | Situation | Condition | Notes |
@@ -53,7 +56,7 @@ Observed in a full-featured follower mod (hundreds of INFOs, grouped by what the
 
 | Situation | Conditions the mod uses | Builder |
 |-----------|------------------------|---------|
-| Weather | Idle + `IsRaining == 1` or `IsSnowing == 1`, both with `IsInInterior == 0` | `IsRaining`/`IsSnowing` not yet; `IsInInterior` ✔ |
+| Weather | Idle + `IsRaining == 1` or `IsSnowing == 1`, both with `IsInInterior == 0` | ✔ (`weather_lines`) |
 | Time of day | Greetings by `GetCurrentTime` ranges (5-12, 12-18, 18-22); night idle: `GetGlobalValue GameHour < 6` or `> 18` with `IsInInterior == 0`. The two GameHour tests are OR'd | `GetGlobalValue` ✔ |
 | Main quest | `GetStage` ranges on `MQ102` (== 30), `MQ103` (>= 50 and < 180, and `>= 180`), `MQ104` (48-65 and 85-110), `MQ105` (10-20) | ✔ |
 | Side quests and own quest | `GetStage`, `GetStageDone` with `param2`, `GetQuestCompleted` on the mod's own quest | `GetStage`, `GetStageDone` ✔ |

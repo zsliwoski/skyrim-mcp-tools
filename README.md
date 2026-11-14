@@ -83,12 +83,12 @@ what a plan needs, and see the `skyrim-skse-scripting` skill.
 - `add_quest` with kinds fetch, kill, plant and radiant: `add_fetch_quest`, `add_kill_quest`,
   `add_plant_quest`, `add_radiant_quest`. A fetch quest's item is owned by the player (no theft bounty;
   `stolen: true` keeps the cell owner) and its alias carries the Quest Object flag so it cannot be dropped.
-- `add_quest_alias`, `add_quest_stage_script`, `add_npc_chat`, `search_quests`, `quest_console_commands`
+- `add_quest_alias`, `add_quest_stage_script`, `add_npc_chat`, `add_follower_controls`, `search_quests`, `quest_console_commands`
 - `package_plugin` writes a SEQ file so start-game-enabled quests start on existing saves; the quest-authoring
   skill also describes a bootstrap quest that starts a plugin's quests when it is installed mid-playthrough
 
 ### Records, items and world
-- `create_record`, `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
+- `create_record`, `create_faction`, `create_package`, `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
   `{"sig": "ENCH", "field": "cost", "value": 250}`, or `record_flags`), `copy_subrecords`, `drop_conditions`,
   `remove_records`. `clone_record` clears the Non-Playable flag on ARMO and WEAP clones so they show in the inventory.
 - `diff_records` (field-aware comparison of two records) and `get_record(full=...)` with decoded `fields`

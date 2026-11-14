@@ -52,9 +52,23 @@ Besides menu topics, the engine speaks lines by itself when something happens. V
 | `combat_lines: true` | `attack`, `power_attack`, `bash`, `block`, `hit`, `taunt`, `flee`, `bleedout`, `death`, `normal_to_combat`, `normal_to_alert`, `alert_to_combat`, `combat_to_normal` | Fighting, grunts and jeers |
 | `ambient_lines: true` | `notice_corpse`, `observe_combat`, `shout_reaction` | Any NPC: finding a dead body, watching a fight nearby, hearing the player shout |
 | `travel_lines: true` (implied by `follower`) | `idle` conditioned on `CurrentHireling` | A hired companion on the road and in places |
+| `weather_lines` / `time_lines` / `main_quest_lines` / `place_lines: true` | `idle` conditioned on `CurrentHireling` plus the situation | Context commentary, see `skyrim-dialogue-context` |
 | `follower` | `agree`, `refuse`, `show` | Favor reactions, see `skyrim-followers` |
 
 Every NPC should get `combat_lines` and `ambient_lines`; hirelings get the travel set too. Fixed rule: the more time the player spends with an NPC, the more location and travel lines he needs, because he will repeat himself quickly. A shopkeeper can keep the generic set; a companion should have many `idle` entries and a distinct set per location.
+
+### Immersion layers
+Ask the user (or infer from the NPC's role) how much reaction depth the NPC should have, and build the layers up to that level. Each layer includes the ones before it.
+
+| Layer | Contents | Tools |
+|-------|----------|-------|
+| 1. Base (a vanilla townsperson) | Pain grunts and combat sayings (`combat_lines`), a few passive `idle` sayings, reactions to a body and to shouts (`ambient_lines`), one or two generic conditions such as weather or time of day | `edit_npc` bark flags; `weather_lines` / `time_lines` for hirelings |
+| 2. Aware of the player | Comments on the player's gear, accomplishments, guild or faction standing, quest progress and reputation | `greeting`/`idle` entries with conditions (`GetStage`, `GetQuestCompleted`, `GetFactionRank`, `GetEquipped`, `GetGlobalValue`); `main_quest_lines` |
+| 3. Aware of the world (mostly followers) | Lines for each kind of place the player visits and each hold or named location | `place_lines`, `travel_lines`, `LocationHasKeyword` / `GetInCurrentLoc` entries; `commentary_text` to replace presets |
+| 4. Social | Scenes with other NPCs where this NPC drives the conversation, plus opinions of neighbours | `add_npc_chat`; see `skyrim-group-banter` |
+| 5. Full coverage | A wide suite of reactions across many situations (weather, time, combat events, summons, being left behind, quest stages, places, other NPCs), with several variants per situation | all of the above plus `add_follower_controls` options such as `left_behind` and `summon`, see `skyrim-followers` |
+
+Make the content fit the NPC. Before writing, check where the NPC lives and works (`get_npc`, `get_cell_contents`, the home location's keywords) and what they would plausibly meet: a farmer remarks on the weather, crops and bandits, not on dragon lairs or the Thieves Guild; a guard talks about crime, the jarl and the war; a hireling who travels needs places across the whole map. Skip presets that make no sense for the NPC (no `place_lines` for someone who never leaves a shop), keep voice and vocabulary consistent with their background, and avoid spoilers for quests the NPC could not know about.
 
 How vanilla does location comments (`DialogueFollower` topic `HirelingIdles`, 247 INFOs, subtype `IDLE`): each line is an INFO conditioned on the speaker, being a follower, and a place. Places are checked with these `conditions` functions:
 - `LocationHasKeyword` (function 562) with a location keyword: `LocSetCave`, `LocSetNordicRuin`, `LocSetDwarvenRuin`, `LocTypeBanditCamp`, `LocTypeDraugrCrypt`, `LocTypeMine`, `LocTypeMilitaryFort`, `LocTypeVampireLair`, `LocTypeWarlockLair`, `LocTypeForswornCamp`, `LocTypeDwarvenAutomatons`.

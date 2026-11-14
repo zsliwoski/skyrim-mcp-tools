@@ -12,7 +12,8 @@ mcp = MCPServer("skyrim-mcp-tools")
 # Tools that read-modify-write plugin files. Concurrent calls (e.g. several clone_record calls in one
 # batch) would load the same file, each add a record and overwrite each other, so they run one at a time.
 WRITE_TOOLS = {
-    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'write_npc_plugin', 'create_npc',
+    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'add_follower_controls',
+    'create_faction', 'create_package', 'write_npc_plugin', 'create_npc',
     'edit_npc', 'add_fetch_quest', 'add_kill_quest', 'add_plant_quest', 'add_radiant_quest', 'add_quest',
     'clone_record', 'clone_records', 'create_cell', 'make_reference_persistent', 'snapshot_plugin',
     'restore_snapshot', 'install_plugin', 'edit_text', 'edit_condition', 'edit_script', 'edit_npc_face',
@@ -384,6 +385,85 @@ def add_npc_chat(target_plugin: str, spec: dict, plugins: list[str] | None = Non
     try:
         from tools.quests.chat_builder import add_npc_chat as run
         res = run(npc_builder(_with_target(plugins, target_plugin)), spec, target_plugin)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_follower_controls(target_plugin: str, spec: dict, plugins: list[str] | None = None) -> dict:
+    """Give a follower adjustable follow distance and fighting style, set through dialogue.
+
+    spec: {npc (NPC_ in target_plugin), prefix (editor-ID prefix; default the NPC's editor ID),
+    dialogue_quest_editor_id (default <prefix>DialogueQuest), follow_distance (default true), fighting_style
+    (default true), combat_overrides (default false; adds Cautious/Reckless combat-override packages that keep him
+    near or let him range from the player, linked through the alias's ECOR list; needs the fighting-style
+    faction, so it can be run alone on a plugin where the other settings already exist), horse_sharing (default
+    false; adds a Steed alias and a controller quest script <prefix>ControlScript, a ShareHorse faction, and topics
+    "take a horse" / "walk with me": the follower is mounted on a nearby horse while the player rides; needs only
+    vanilla Papyrus; run alone like combat_overrides), horse_radar (default false; adds a "look out for a horse"
+    topic that picks the closest unowned or player-owned horse into the Steed alias without riding yet, and
+    refreshes the controller script; needs horse_sharing already built or set), horse_gift (default false; topics
+    "take my horse" (gives the player's last-ridden horse to the follower: ownership moves to him, he rides it) and
+    "I'd like my horse back" (ownership returns to the player and he stops riding); same prerequisites and script
+    refresh as horse_radar), left_behind (default false; the controller script's update loop (every 3 s) moves a
+    hired, non-waiting, out-of-combat follower who has been out of reach for about 15 s to the player, and sets his
+    <prefix>LeftBehindFaction rank to 1 so dialogue can react; adds a "Where did you get to?" topic that resets it;
+    can be added to an existing plugin and keeps the horse features), summon (default false; needs left_behind:
+    adds two engine-spoken reaction topics (idle subtype) gated on the LeftBehindFaction rank (2 = summoned, 3 =
+    caught up) whose DIALs are set as the SummonTopic and CaughtUpTopic properties of the controller script, plus
+    Summon() on that script, which moves him to the player and plays the summon reaction. summon_lines and
+    caught_up_lines override the default lines. The result's `summon_spell` holds a script name and source for
+    create_script_effect(delivery="self") then create_spell(kind="spell", delivery="self"); a topic granting the
+    spell is done with edit_npc dialogue `properties` + `code`, see the skyrim-followers skill), map_marker (default false; gives the
+    controller quest a journal entry and an objective targeting the follower alias, plus topics to show or hide him
+    on the map and compass; once per controller quest), text: {key: [prompt, reply]} to override lines; keys
+    distance_menu, distance_0..2, style_menu, style_0..2, exit, horse_gift, horse_reclaim, horse_find, horse_share,
+    horse_walk, left_behind_ask, marker_on, marker_off}.
+    Creates a hidden faction per setting (the NPC joins at rank 0), topics shown while hired that set the rank, and
+    for follow distance a controller quest (priority 70) whose alias holds Follow packages for Close and Far.
+    Fighting style also sets the Aggression and Confidence actor values. Existing saves need `startquest
+    <prefix>FollowerControl`, or a new game. Run validate_plugin, package_plugin and install_plugin afterwards.
+    """
+    try:
+        from tools.npcs.follower_controls import add_follower_controls as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), spec, target_plugin)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_faction(target_plugin: str, editor_id: str, name: str | None = None, ranks: list[str] | None = None,
+                   hidden: bool = True, plugins: list[str] | None = None) -> dict:
+    """Add a faction with named ranks (rank 0 is the first title). hidden keeps it out of the player's faction list."""
+    try:
+        from tools.records.ai_records import create_faction as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, ranks, hidden)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_package(target_plugin: str, editor_id: str, donor: str = "PlayerFollowerPackage",
+                   conditions: list[dict] | None = None, radii: list[float] | None = None,
+                   combat_style: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Clone a Skyrim.esm AI package with extra conditions, new radii and an optional combat style.
+
+    conditions: [{function, form, op, value, run_on}] as for edit_npc dialogue; `form` may be a record already in
+    target_plugin (e.g. a faction made with create_faction). radii replace the first float parameters of the donor
+    (PlayerFollowerPackage: minimum and maximum follow distance). A package only runs once it is on an actor: add
+    it to an alias package list on a quest with a higher priority than the vanilla follower quest (50), or to
+    the NPC's package list. combat_style is untested in game.
+    """
+    try:
+        from tools.records.ai_records import create_package as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, donor, conditions,
+                  radii, combat_style)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:

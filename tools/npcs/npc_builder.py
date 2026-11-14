@@ -16,6 +16,8 @@ from esplib import Plugin
 from esplib.record import GroupRecord, Record
 from esplib.utils import FormID
 
+from tools.npcs.commentary_presets import (main_quest_entries, place_entries, preset_keys, time_entries,
+                                           weather_entries)
 from tools.npcs.npc_tools import AGGRESSION, ASSISTANCE, CONFIDENCE, MORALITY, SKILLS
 from tools.papyrus.papyrus_build import (compile_script, info_vmad, keep_up_source, npc_script_vmad, script_name,
                                          tif_source)
@@ -100,6 +102,15 @@ FIELDS = {
                      'and reacting to the player shouting (kinds notice_corpse, observe_combat, shout_reaction).',
     'travel_lines': 'true adds idle comments (kind idle) a hired companion makes on the road, in caves, ruins, '
                     'camps and cities, conditioned on CurrentHireling. Implied by follower.',
+    'weather_lines': 'true adds hired-companion idles for rain and snow (outdoors only).',
+    'time_lines': 'true adds hired-companion idles for dawn, dusk, night and the small hours (outdoors only).',
+    'main_quest_lines': 'true adds hired-companion idles for main-quest milestones (MQ101, MQ103, MQ104, MQ105, '
+                        'MQ201, MQ306), each shown between completing that quest and the next.',
+    'place_lines': 'true adds hired-companion idles for inns, shops, temples, player houses, Orc strongholds, '
+                   'dragon lairs and settlements (LocationHasKeyword).',
+    'commentary_text': 'Optional {key: [lines]} replacing the preset lines of weather_lines, time_lines, '
+                       'main_quest_lines and place_lines. Keys: rain, snow, dawn, dusk, night, small_hours, '
+                       'MQ101, MQ103, MQ104, MQ105, MQ201, MQ306 and the LocType* keyword editor IDs.',
     'quest_editor_id': 'Editor ID of the dialogue quest (default <editor_id>DialogueQuest).',
     'keep_up': 'Hired-follower catch-up: true or {"distance": game units, default 3000}. Attaches an Actor script '
                'that teleports him next to the player when he falls further behind while in CurrentHireling, not '
@@ -825,6 +836,16 @@ class NpcBuilder:
                                        'value': 1})
         if spec.get('combat_lines'):
             entries += combat_entries()
+        ct = spec.get('commentary_text') or {}
+        bad = sorted(set(ct) - preset_keys()) if isinstance(ct, dict) else None
+        if bad is None or bad:
+            p.errors.append(f"commentary_text: must be {{key: [lines]}} with keys from {sorted(preset_keys())}"
+                            + (f"; unknown {bad}" if bad else ""))
+            ct = {}
+        for flag, make in (('weather_lines', weather_entries), ('time_lines', time_entries),
+                           ('main_quest_lines', main_quest_entries), ('place_lines', place_entries)):
+            if spec.get(flag):
+                entries += make(ct)
         if spec.get('ambient_lines'):
             entries += ambient_entries()
         for i, t in enumerate(entries):
