@@ -269,5 +269,6 @@ class TestNpcChat:
         assert {c["function"] for c in conds} <= set(nb.CONDITION_FUNCTIONS)
         assert any(c["function"] == "GetDistance" and c["run_on"] == "target" for c in conds)
         assert not any(c["function"] == "GetInFaction" for c in trigger_conditions(self.spec(hired=False)))
-        for name in ("GetDayOfWeek", "GetSitting", "IsInCombat", "IsTalking", "IsRaining", "GetIsRace"):
+        for name in ("GetDayOfWeek", "GetSitting", "IsInCombat", "IsTalking", "IsRaining", "GetIsRace", "GetIsSex"):
             assert name in nb.CONDITION_FUNCTIONS
+        assert nb.CONDITION_FUNCTIONS["GetIsSex"] == 70 and nb.SEXES == {"male": 0, "female": 1}

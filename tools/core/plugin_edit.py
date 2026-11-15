@@ -153,7 +153,8 @@ def package_plugin(path, dest=None):
 
 
 def write_seq(path):
-    """Write SEQ/<plugin>.seq listing the plugin's start-game-enabled quests (needed to start them on existing saves)."""
+    """Write SEQ/<plugin>.seq listing the plugin's start-game-enabled quests, as full form IDs including the master
+    index byte (xEdit writes the same). Without it the game does not start the quests' dialogue on a new game."""
     import struct
     from esplib import Plugin
     plugin = Plugin.load(str(path))
@@ -163,7 +164,7 @@ def write_seq(path):
         dnam = r.get_subrecord('DNAM') if r.signature == 'QUST' else None
         if dnam is not None and len(dnam.data) >= 2 and struct.unpack_from('<H', bytes(dnam.data))[0] & 1 \
                 and hi(r.form_id.value) == own:
-            ids.append(r.form_id.value & 0xFFFFFF)
+            ids.append(r.form_id.value)
     seq = path.parent / 'SEQ' / f"{path.stem}.seq"
     if not ids:
         seq.unlink(missing_ok=True)

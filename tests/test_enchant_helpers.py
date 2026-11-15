@@ -3,7 +3,7 @@ import pytest
 import server
 
 
-@pytest.mark.game
+@pytest.mark.fakegame
 class TestEnchantHelpers:
     def test_check_script_ok_and_error(self, compiler_available):
         good = server.check_script("Scriptname CheckProbeOk Extends ActiveMagicEffect\nEvent OnEffectStart(Actor a, Actor b)\nEndEvent\n")
@@ -31,7 +31,7 @@ class TestEnchantHelpers:
         assert "nothing to edit" in res["error"]
 
 
-@pytest.mark.game
+@pytest.mark.fakegame
 class TestConsoleAndPlan:
     def test_filters_and_plan(self, sandbox, compiler_available):
         res = server.create_script_effects("PlanMod.esp", [{
@@ -56,7 +56,7 @@ SOURCE = ("Scriptname {name} Extends ActiveMagicEffect\nEvent OnEffectStart(Acto
           "\tRegisterForAnimationEvent(a, \"FootSprintLeft\")\nEndEvent\n")
 
 
-@pytest.mark.game
+@pytest.mark.fakegame
 class TestCellsAndPlacement:
     def test_cell_tools_see_target_plugin(self, sandbox):
         from helpers import make_hall
@@ -92,7 +92,7 @@ class TestCellsAndPlacement:
         assert "nothing matching" in missing["error"]
 
 
-@pytest.mark.game
+@pytest.mark.fakegame
 class TestCreateEnchantedItem:
     def test_boots_with_script_placed_beside_npc(self, sandbox, compiler_available):
         from helpers import make_hall
@@ -127,7 +127,7 @@ class TestCreateEnchantedItem:
         assert "ARMO or WEAP" in res["error"]
 
 
-@pytest.mark.game
+@pytest.mark.fakegame
 class TestDeployBoth:
     def test_both_zips_and_installs(self, sandbox, tmp_path, monkeypatch):
         from tools.records import maintenance

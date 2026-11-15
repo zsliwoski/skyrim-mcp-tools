@@ -25,7 +25,7 @@ CAUGHT_UP_LINES = ["There you are. I'd lost you.", "You walk fast. I had to run 
                    "I lost the trail for a bit. I'm back now."]
 GET_STAGE = 58
 MARKER_OBJECTIVE, MARKER_ON_STAGE, MARKER_OFF_STAGE = 10, 10, 20
-QUEST_TYPE_MISC = 6
+QUEST_TYPE_SIDE = 8  # a Side Quests entry, not a Miscellaneous task, so the objective marks the map
 DONOR_COMBAT_OVERRIDE = 'PlayerFollowerCombatOverridePackage'
 # fighting-style rank -> (title, leash radius around the player during combat); rank 0 keeps vanilla behaviour
 LEASHES = {1: ('Cautious', 300), 2: ('Reckless', 2500)}
@@ -235,7 +235,7 @@ def add_follower_controls(b, spec, target_plugin):
         if quest is None:
             quest = Record('QUST', FormID(b.own(new_id())), 0)
             quest.add_subrecord('EDID', z(names['quest']))
-            quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, CONTROL_PRIORITY, 0, 0, 0))
+            quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x11, CONTROL_PRIORITY, 0, 0, 0))
             quest.add_subrecord('NEXT', b'')
             quest.add_subrecord('ANAM', struct.pack('<I', 0))
             plugin.add_record(quest)
@@ -371,7 +371,7 @@ def add_map_marker(quest, alias, name):
         raise ValueError(f"{quest.editor_id} already has objective {MARKER_OBJECTIVE}; the map marker is already set up")
     dnam = next(s for s in subs if s.signature == 'DNAM')
     flags, prio, ver, unk, _ = struct.unpack('<HBBII', bytes(dnam.data)[:12])
-    dnam.data = struct.pack('<HBBII', flags, prio, ver, unk, QUEST_TYPE_MISC)
+    dnam.data = struct.pack('<HBBII', flags, prio, ver, unk, QUEST_TYPE_SIDE)
 
     def put(items, before=None, after=None):
         n = len(subs)

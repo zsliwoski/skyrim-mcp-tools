@@ -6,7 +6,7 @@ import pytest
 import server
 from helpers import FETCH_SPEC, sigs
 
-pytestmark = pytest.mark.game
+pytestmark = pytest.mark.fakegame
 
 
 @pytest.mark.compiler
@@ -78,6 +78,23 @@ class TestQuests:
         with zipfile.ZipFile(pkg["zip"]) as z:
             assert any("TIF__TestMod_" in n for n in z.namelist())
         assert "error" in server.add_npc_chat("TestMod.esp", spec)
+
+    def test_npc_chat_gendered_player_line_makes_two_infos(self, npc_plugin):
+        from esplib import Plugin
+        spec = {"scene_editor_id": "TestChat2", "quest_editor_id": "TestChatQuest2", "speaker": "TestSven",
+                "partner": "Lydia", "trigger_line": "Is that Lydia?",
+                "lines": [{"who": "speaker", "player_text": {"male": "He is my alibi.", "female": "She is my alibi."}},
+                          {"who": "partner", "text": "Hm."}]}
+        assert "error" in server.add_npc_chat("TestMod.esp", {**spec, "lines": [
+            {"who": "speaker", "text": "x", "player_text": {"male": "a", "female": "b"}}]})
+        assert "error" in server.add_npc_chat("TestMod.esp", {**spec, "lines": [
+            {"who": "speaker", "player_text": {"male": "a"}}]})
+        res = server.add_npc_chat("TestMod.esp", spec)
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        texts = [bytes(s.data) for r in plug.records if r.signature == "INFO" for s in r.subrecords
+                 if s.signature == "NAM1"]
+        assert b"He is my alibi.\x00" in texts and b"She is my alibi.\x00" in texts
 
     def test_follower_controls_build_factions_packages_and_topics(self, npc_plugin):
         from esplib import Plugin

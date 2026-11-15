@@ -28,7 +28,8 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       # Tests marked game or compiler need a Skyrim install and the Creation Kit, so CI leaves them out.
-      # The authoring group is made of such tests only; pytest exits 5 when nothing is left to run.
+      # Tests marked fakegame run against the small master built in tests/fake_master.py instead.
+      # A group made only of game tests leaves nothing to run, and pytest exits 5 then.
       - run: |
           python -m pytest ${{ matrix.group.paths }} -m "not game and not compiler"
           if ($LASTEXITCODE -eq 5) { exit 0 }

@@ -297,8 +297,11 @@ python -m pytest
 ```
 
 GitHub Actions ([tests.yml](.github/workflows/tests.yml)) runs only the tests that don't need game files
-(`pytest -m "not game and not compiler"`). Tests marked `game` need Skyrim SE (they load `Skyrim.esm`, about
-30 s), and tests marked `compiler` also need the Creation Kit Papyrus compiler, so run those locally with
+(`pytest -m "not game and not compiler"`). Tests marked `fakegame` run against a small synthetic
+`Skyrim.esm` built by [tests/fake_master.py](tests/fake_master.py) (only the records the tests use), so they
+need no install and run in CI; add a record there when a `fakegame` test needs another vanilla one. Tests
+marked `game` need the real Skyrim SE (they load `Skyrim.esm`, about 30 s), and tests marked `compiler` also
+need the Creation Kit Papyrus compiler, so run those locally with
 `SKYRIM_DATA_DIR` and `SKYRIM_CK_DIR` set if your install isn't in the default Steam location:
 
 ```powershell

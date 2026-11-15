@@ -5,7 +5,7 @@ import pytest
 import server
 from helpers import sigs
 
-pytestmark = pytest.mark.game
+pytestmark = pytest.mark.fakegame
 
 
 class TestRecords:

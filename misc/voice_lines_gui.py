@@ -40,7 +40,6 @@ class App(tk.Tk):
         self.recording = None
         self.pending_voice = None
         self.calls = queue.Queue()
-        self._build_ui()
         self.after(100, self.poll)
         if plugin:
             self.load(plugin)

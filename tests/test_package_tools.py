@@ -5,7 +5,7 @@ import pytest
 
 import server
 
-pytestmark = pytest.mark.game
+pytestmark = pytest.mark.fakegame
 
 
 class TestPackage:

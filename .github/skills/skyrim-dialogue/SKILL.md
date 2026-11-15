@@ -70,6 +70,14 @@ Ask the user (or infer from the NPC's role) how much reaction depth the NPC shou
 
 Make the content fit the NPC. Before writing, check where the NPC lives and works (`get_npc`, `get_cell_contents`, the home location's keywords) and what they would plausibly meet: a farmer remarks on the weather, crops and bandits, not on dragon lairs or the Thieves Guild; a guard talks about crime, the jarl and the war; a hireling who travels needs places across the whole map. Skip presets that make no sense for the NPC (no `place_lines` for someone who never leaves a shop), keep voice and vocabulary consistent with their background, and avoid spoilers for quests the NPC could not know about.
 
+### Player pronouns and gendered words
+Never avoid writing a line because it refers to the player as "he", "she", "sir", "madam", "lad", "lass", "brother", "sister" and so on. But whenever a line (or a prompt or reply) does use a gendered word for the player, write its counterpart as well and gate the pair on the player's sex, so each player hears the matching version:
+- Give each version the same other conditions, one with `{"function": "GetIsSex", "sex": "male", "op": "==", "value": 1, "run_on": "target"}` and one with `"sex": "female"`. `run_on` must be `target` (the player); on the subject it would test the NPC.
+- Use `answers` only for variants that are all valid for the same player; a gendered variant is a separate entry with its own `GetIsSex` condition.
+- Keep the two versions equivalent in tone and length. Lines that need no gendered word can stay unconditioned; prefer neutral wording when it reads naturally ("friend", "traveller").
+- Scene chat lines (`add_npc_chat`, including the partner's lines) follow the same rule: give a line `player_text: {male, female}` instead of `text` and it is built as two INFOs gated on the player's sex.
+- Check this before finishing: list the NPC's dialogue (`get_npc_dialogue`), scan for gendered words about the player, and add any missing counterpart. Words about the NPC or a third party do not need a pair.
+
 How vanilla does location comments (`DialogueFollower` topic `HirelingIdles`, 247 INFOs, subtype `IDLE`): each line is an INFO conditioned on the speaker, being a follower, and a place. Places are checked with these `conditions` functions:
 - `LocationHasKeyword` (function 562) with a location keyword: `LocSetCave`, `LocSetNordicRuin`, `LocSetDwarvenRuin`, `LocTypeBanditCamp`, `LocTypeDraugrCrypt`, `LocTypeMine`, `LocTypeMilitaryFort`, `LocTypeVampireLair`, `LocTypeWarlockLair`, `LocTypeForswornCamp`, `LocTypeDwarvenAutomatons`.
 - `GetInCurrentLoc` (359) with a named location: `WhiterunLocation`, `WindhelmLocation`, `SolitudeLocation`, `MarkarthLocation`, `RiftenLocation`, `FalkreathLocation`, `HighHrothgarLocation`, `IvarsteadLocation`, `KarthwastenLocation` and others; a named ruin such as `MzinchaleftLocation` gets its own lines.
@@ -122,7 +130,7 @@ INFO `VMAD`: version 5, object format 2, the script with its properties, then fr
 Check in this order, using the in-game console:
 1. `help <QuestEditorId> 0` lists the quest and topic records. Nothing means the plugin did not load or the records are missing.
 2. `sqv <QuestEditorId>` shows whether the quest is running and its alias fill. A quest that is not running shows no topics. Try `startquest <QuestEditorId>`, then talk again.
-3. If it works after `startquest`, the quest is not starting by itself. A "Start Game Enabled" quest may need a `.seq` file to start on an existing save; also try a new save.
+3. If it works after `startquest`, the quest is not starting by itself. A "Start Game Enabled" quest needs a correct `.seq` file (full form IDs with the master byte, as xEdit writes) for its dialogue to work on a new game; also try a new save.
 4. Greeting plays but the topic menu is empty: player topics (`CUST`) need a top-level dialogue branch. Each topic needs a `DLBR` (`QNAM` quest, `TNAM` 0, `DNAM` 1 = top-level, `SNAM` the topic) and a `BNAM` on the DIAL pointing back at it. The builder now writes these. Otherwise compare the DIAL and INFO subrecords with a vanilla topic using `get_record`.
 5. A cloned NPC inherits the original's packages and factions, which can change who can talk to it. Check `get_npc`.
 6. Script not firing: confirm the `.pex` is in the mod's `Scripts` folder and the script name matches the INFO `VMAD`.

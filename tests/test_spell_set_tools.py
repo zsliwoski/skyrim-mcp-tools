@@ -8,7 +8,7 @@ import server
 from helpers import make_hall
 from tools.records.maintenance import all_records
 
-pytestmark = pytest.mark.game
+pytestmark = pytest.mark.fakegame
 
 
 class TestSpellSet:

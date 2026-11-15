@@ -18,7 +18,7 @@ EITHER_HAND = 0x00013F44   # EQUP vanilla spells use so they can go in either ha
 SPELL_DISPLAY_OBJECT = 0x0010A046  # MDOB vanilla hand-cast spells carry
 
 
-def spell_subrecords(name, effects, kind='ability', delivery=None, cost=0, cast_duration=0.0, range_=0.0,
+def spell_subrecords(name, effects, kind='ability', delivery=None, cost=None, cast_duration=0.0, range_=0.0,
                      description='', cast=None):
     """Subrecord specs for a SPEL: OBND, FULL, (MDOB, ETYP for hand spells), optional DESC, SPIT, then one
     EFID/EFIT pair per effect. cast overrides the cast type (fire_and_forget, concentration, constant)."""
@@ -37,9 +37,9 @@ def spell_subrecords(name, effects, kind='ability', delivery=None, cost=0, cast_
         cast_type = CAST_TYPES[cast]
     if kind == 'ability' and delivery != 'self':
         raise ValueError("abilities are constant self effects; use kind='spell' for other deliveries")
-    # flags 0 = auto-calculate cost; a non-zero cost without auto-calc is set via the cost-override flag
-    flags = 0 if not cost else 1
-    spit = struct.pack('<IIIfIIffI', int(cost), flags, spell_type, 0.0, cast_type, DELIVERY[delivery],
+    # flags 0 = auto-calculate cost; the manual-cost flag makes the given cost exact, so cost 0 is a free spell
+    flags = 0 if cost is None else 1
+    spit = struct.pack('<IIIfIIffI', int(cost or 0), flags, spell_type, 0.0, cast_type, DELIVERY[delivery],
                        float(cast_duration), float(range_), 0)
     subs = [{'sig': 'OBND', 'hex': '00' * 12}, {'sig': 'FULL', 'text': name}]
     if kind == 'spell':
@@ -63,7 +63,7 @@ def effect_subrecords(effects):
     return subs
 
 
-def create_spell(builder, target_plugin, editor_id, name, effects, kind='ability', delivery=None, cost=0,
+def create_spell(builder, target_plugin, editor_id, name, effects, kind='ability', delivery=None, cost=None,
                  cast_duration=0.0, range_=0.0, description='', cast=None):
     """Add a SPEL to target_plugin built from existing magic effects."""
     subs = spell_subrecords(name, effects, kind, delivery, cost, cast_duration, range_, description, cast)

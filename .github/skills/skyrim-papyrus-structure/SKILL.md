@@ -15,6 +15,8 @@ How to read compiled scripts with `get_script` and understand what they do.
 
 Property values bound by the record (which form each property points to) come from `get_quest_structure` (`bound_properties`), not from `get_script`.
 
+A mod's own BSA is only searched when that plugin is listed in `plugins` (`get_script("X", plugins=["Skyrim.esm", "MyMod.esp"])`); with the default `Skyrim.esm` a mod's script reports "not found". `extract_script(names, plugins, dest)` copies the raw `.pex` files (or `["*"]` for all) out of loose files and BSAs into `output/extracted_scripts`.
+
 ## Script kinds and what they do
 | Kind | Name pattern | Extends | Role |
 |------|--------------|---------|------|

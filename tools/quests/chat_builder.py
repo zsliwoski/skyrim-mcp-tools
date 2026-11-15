@@ -16,6 +16,8 @@ PHASE_TIMER = 200
 ALIAS_OPTIONAL_REUSE = 0x2 | 0x8
 SCENE_TOPIC_DATA = b'\x00\x02\x0e\x00'
 SPEAKER, PARTNER = 'speaker', 'partner'
+GET_IS_SEX = 70
+SEX_PARAM = {'male': 0, 'female': 1}
 KEYS = {'scene_editor_id', 'quest_editor_id', 'speaker', 'partner', 'lines', 'trigger_lines', 'trigger_line',
         'dialogue_quest_editor_id', 'partner_reference', 'distance', 'hired', 'random_percent', 'once',
         'conditions'}
@@ -38,15 +40,24 @@ def check_spec(spec):
         errors.append("lines must be a non-empty list of {who: 'speaker'|'partner', text}")
     else:
         for i, ln in enumerate(lines):
-            if not (isinstance(ln, dict) and ln.get('who') in (SPEAKER, PARTNER)
-                    and isinstance(ln.get('text'), str) and ln['text'].strip()):
-                errors.append(f"lines[{i}]: needs who ('speaker' or 'partner') and text")
+            pt = ln.get('player_text') if isinstance(ln, dict) else None
+            has_text = isinstance(ln, dict) and isinstance(ln.get('text'), str) and ln['text'].strip()
+            variants_ok = (isinstance(pt, dict) and set(pt) == {'male', 'female'}
+                           and all(isinstance(v, str) and v.strip() for v in pt.values()))
+            if not (isinstance(ln, dict) and ln.get('who') in (SPEAKER, PARTNER) and (bool(has_text) != bool(pt))
+                    and (pt is None or variants_ok)):
+                errors.append(f"lines[{i}]: needs who ('speaker' or 'partner') and either text or player_text "
+                              "{male, female} (for lines that refer to the player with a gendered word)")
     trig = spec.get('trigger_lines') or ([spec['trigger_line']] if spec.get('trigger_line') else [])
     if isinstance(trig, str):
         trig = [trig]
     if not (trig and all(isinstance(t, str) and t.strip() for t in trig)):
         errors.append("trigger_line (or trigger_lines) is required: what the follower says before the chat starts")
-    texts = [ln.get('text', '') for ln in (lines or []) if isinstance(ln, dict)] + list(trig)
+    texts = list(trig)
+    for ln in lines or []:
+        if isinstance(ln, dict):
+            texts += [ln.get('text', '')] + list((ln.get('player_text') or {}).values() if isinstance(
+                ln.get('player_text'), dict) else [])
     try:
         for t in texts:
             z(str(t))
@@ -193,7 +204,7 @@ def add_npc_chat(b, spec, target_plugin):
     if quest is None:
         quest = Record('QUST', FormID(b.own(new_id())), 0)
         quest.add_subrecord('EDID', z(qid))
-        quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, 60, 0, 0, 0))
+        quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x11, 60, 0, 0, 0))
         quest.add_subrecord('NEXT', b'')
         quest.add_subrecord('ANAM', struct.pack('<I', 0))
         plugin.add_record(quest)
@@ -219,16 +230,22 @@ def add_npc_chat(b, spec, target_plugin):
         plugin.add_record(dial)
         group = GroupRecord(7, dial.form_id.value)
         top.records.append(group)
-        info = Record('INFO', FormID(b.own(new_id())), 0)
-        info.add_subrecord('ENAM', struct.pack('<HH', 0, 0))
-        info.add_subrecord('CNAM', b'\x00')
-        info.add_subrecord('TRDT', struct.pack('<II4xB3xIB3x', 0, 50, 1, 0, 1))
-        info.add_subrecord('NAM1', z(ln['text']))
-        info.add_subrecord('NAM2', b'\x00')
-        info.add_subrecord('NAM3', b'\x00')
-        info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_ID, local[who], 0, 0, 0, -1))
-        group.records.append(info)
-        b.register(plugin, info)
+        variants = ([(None, ln['text'])] if ln.get('text') else
+                    [(sex, ln['player_text'][sex]) for sex in ('male', 'female')])
+        for sex, text in variants:
+            info = Record('INFO', FormID(b.own(new_id())), 0)
+            info.add_subrecord('ENAM', struct.pack('<HH', 0, 0))
+            info.add_subrecord('CNAM', b'\x00')
+            info.add_subrecord('TRDT', struct.pack('<II4xB3xIB3x', 0, 50, 1, 0, 1))
+            info.add_subrecord('NAM1', z(text))
+            info.add_subrecord('NAM2', b'\x00')
+            info.add_subrecord('NAM3', b'\x00')
+            info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_ID, local[who], 0, 0, 0, -1))
+            if sex:
+                info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_SEX, SEX_PARAM[sex], 0, 1, 0,
+                                                       -1))
+            group.records.append(info)
+            b.register(plugin, info)
         actions.append((alias[who], dial.form_id.value, alias[other]))
     scene = scene_record(b.own(new_id()), sid, quest_fid, sorted(set(alias.values())), actions)
     plugin.add_record(scene)

@@ -7,7 +7,7 @@ from esplib import Plugin
 import server
 from helpers import sigs
 
-pytestmark = pytest.mark.game
+pytestmark = pytest.mark.fakegame
 
 
 class TestCreateNpc:
@@ -86,6 +86,8 @@ class TestCreateNpc:
                                  "clone_from": "ZzzNoSuchNpc"})
         assert "error" in res
 
+    @pytest.mark.compiler
+    @pytest.mark.usefixtures("compiler_available")
     def test_follower_adds_hiring_topics_and_hides_normal_ones(self, sandbox):
         res = server.create_npc({
             "plugin_name": "Fol.esp", "editor_id": "FolSven", "name": "Fol Sven", "clone_from": "Sven",

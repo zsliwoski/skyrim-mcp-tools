@@ -358,6 +358,21 @@ class ScriptStore:
             data = self.readers[src].read_file(f) if kind == 'bsa' else src.read_bytes()
             return parse(data), Path(src).name
 
+    def extract(self, name, dest):
+        """Write the compiled script (.pex, from loose files or a BSA) into dest; returns (path, origin) or None."""
+        with self.lock:
+            if self.pex is None:
+                self._load()
+            hit = self.pex.get(name.lower())
+            if hit is None:
+                return None
+            kind, src, f = hit
+            data = self.readers[src].read_file(f) if kind == 'bsa' else src.read_bytes()
+            out = Path(dest) / f"{Path(f or src).stem}.pex"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
+            return out, Path(src).name
+
     def get(self, name):
         """Script text and origin for a name, locked for thread safety."""
         with self.lock:

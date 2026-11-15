@@ -215,7 +215,7 @@ def validate(path, data_dir=None):
             warnings.append(f"quest {q.editor_id} is not start-game-enabled; it needs a start script")
 
     seq = base / 'SEQ' / f"{path.stem}.seq"
-    expected = {r.form_id.value & 0xFFFFFF for r in recs if r.signature == 'QUST' and hi(r.form_id.value) == own
+    expected = {r.form_id.value for r in recs if r.signature == 'QUST' and hi(r.form_id.value) == own
                 and r.get_subrecord('DNAM') is not None
                 and struct.unpack_from('<H', bytes(r.get_subrecord('DNAM').data))[0] & 1}
     have = set(struct.unpack(f'<{seq.stat().st_size // 4}I', seq.read_bytes())) if seq.exists() else set()

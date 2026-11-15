@@ -11,7 +11,7 @@ from helpers import make_hall, sigs
 from tools.core.plugin_edit import plugin_files
 from tools.records.maintenance import all_records
 
-pytestmark = pytest.mark.game
+pytestmark = pytest.mark.fakegame
 
 
 class TestEnchantTools:

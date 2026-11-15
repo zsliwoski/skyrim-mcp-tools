@@ -55,7 +55,7 @@ def create_spell_set(refresh, target_plugin, prefix, name, script_name, source, 
         builder, _ = refresh()
         create_spell(builder, target_plugin, sid, f"{name} {label}",
                      [{'effect': effect_ids[key], 'magnitude': magnitude, 'area': area, 'duration': duration}],
-                     'spell', delivery, costs.get(v, cost), 0.0, 0.0, description, cast)
+                     'spell', delivery, costs.get(v, cost) or None, 0.0, 0.0, description, cast)
         spell_ids[v] = sid
         out['spells'].append(sid)
 

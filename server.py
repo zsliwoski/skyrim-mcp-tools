@@ -2,6 +2,7 @@
 import functools
 import os
 import re
+import shutil
 import threading
 from pathlib import Path
 
@@ -230,6 +231,28 @@ def get_script(name: str, include_source: bool = False, plugins: list[str] | Non
 
 
 @mcp.tool()
+def extract_script(names: list[str], plugins: list[str] | None = None, dest: str | None = None) -> dict:
+    """Copy compiled Papyrus scripts (.pex) out of loose files or the plugins' BSAs into a folder.
+
+    names: script names, or ["*"] for every script found. plugins: plugin file names or absolute paths in
+    load order (a plugin's own BSA is only searched when the plugin is listed; defaults to Skyrim.esm). dest:
+    output folder, default output/extracted_scripts. Use get_script to read what a script does; this is for
+    getting the raw file (to compare, decompile elsewhere or reuse).
+    """
+    store = script_tools(plugins).store
+    if store.pex is None:
+        with store.lock:
+            store._load()
+    wanted = sorted(store.pex) if names == ["*"] else names
+    target = dest or str(OUTPUT_DIR / 'extracted_scripts')
+    done, missing = [], []
+    for n in wanted:
+        hit = store.extract(n, target)
+        (done if hit else missing).append({'name': n, 'file': str(hit[0]), 'origin': hit[1]} if hit else n)
+    return {'dest': target, 'extracted': done, 'not_found': missing}
+
+
+@mcp.tool()
 def detect_skse() -> dict:
     """Check whether the Skyrim Script Extender (SKSE) is present, without changing anything.
 
@@ -375,7 +398,8 @@ def add_npc_chat(target_plugin: str, spec: dict, plugins: list[str] | None = Non
 
     spec: {scene_editor_id, quest_editor_id (chat quest, created if absent; each NPC gets an alias),
     speaker (the follower), partner (the other NPC), trigger_line or trigger_lines (what the follower says
-    first), lines: [{who: "speaker"|"partner", text}], dialogue_quest_editor_id (where the trigger idle goes;
+    first), lines: [{who: "speaker"|"partner", text}] (a line that refers to the player with a gendered word gives
+    player_text: {male, female} instead of text and is built as two INFOs gated on the player's sex), dialogue_quest_editor_id (where the trigger idle goes;
     default <speaker>DialogueQuest), partner_reference ('Skyrim.esm:013487' placed reference of the partner,
     gives a distance guard), distance (default 900), hired (only while following; default true),
     random_percent (default 10), once (play one time; default true), conditions (extra, as for edit_npc)}.
@@ -415,7 +439,7 @@ def add_follower_controls(target_plugin: str, spec: dict, plugins: list[str] | N
     caught up) whose DIALs are set as the SummonTopic and CaughtUpTopic properties of the controller script, plus
     Summon() on that script, which moves him to the player and plays the summon reaction. summon_lines and
     caught_up_lines override the default lines. The result's `summon_spell` holds a script name and source for
-    create_script_effect(delivery="self") then create_spell(kind="spell", delivery="self"); a topic granting the
+    create_script_effect(delivery="self") then create_spell(kind="spell", delivery="self", cost=0); a topic granting the
     spell is done with edit_npc dialogue `properties` + `code`, see the skyrim-followers skill), map_marker (default false; gives the
     controller quest a journal entry and an objective targeting the follower alias, plus topics to show or hide him
     on the map and compass; once per controller quest), text: {key: [prompt, reply]} to override lines; keys
@@ -720,7 +744,7 @@ def _out_path(plugin):
 
 @mcp.tool()
 def create_spell(target_plugin: str, editor_id: str, name: str, effects: list[dict], kind: str = "ability",
-                 delivery: str | None = None, cost: int = 0, cast_duration: float = 0.0, range: float = 0.0,
+                 delivery: str | None = None, cost: int | None = None, cast_duration: float = 0.0, range: float = 0.0,
                  description: str = "", cast: str | None = None,
                  plugins: list[str] | None = None) -> dict:
     """Create a spell (SPEL) from existing magic effects.
@@ -729,7 +753,8 @@ def create_spell(target_plugin: str, editor_id: str, name: str, effects: list[di
     kind: "ability" (permanent self effect, add with Actor.AddSpell; effects must be constant-self MGEFs such as
     EnchFortify<School>ConstantSelf), "spell", "power" or "lesser_power". delivery (non-abilities): self, touch,
     aimed, target_actor, target_location. cast: fire_and_forget (default), concentration or constant; the MGEF's
-    own cast type and delivery must match. cost 0 = auto-calculated. See the skyrim-enchantments skill.
+    own cast type and delivery must match. cost: omit for the auto-calculated magicka cost, or give an exact cost;
+    0 makes the spell free. See the skyrim-enchantments skill.
     """
     try:
         _auto_snapshot(target_plugin, "pre_spell")
@@ -1369,6 +1394,42 @@ def install_plugin(plugin: str | list[str], dry_run: bool = False) -> dict:
     def one(name):
         try:
             return install(_out_path(name), DATA_DIR, dry_run)
+        except (ValueError, FileNotFoundError) as e:
+            return {"error": str(e)}
+
+    return _for_each(plugin, one)
+
+
+@mcp.tool()
+def generate_seq(plugin: str | list[str], install: bool = False, remove: bool = False) -> dict:
+    """Write, install or delete the SEQ file that lists a plugin's start-game-enabled quests.
+
+    The engine reads Data/Seq/<plugin>.seq to start those quests on an existing save that predates the
+    plugin; install_plugin and package_plugin already regenerate it. Use this on its own to rebuild it
+    without reinstalling anything. Writes output/SEQ/<plugin>.seq (no file when the plugin has no
+    start-game quests). install: also copy it into the Skyrim Data/Seq folder. remove: delete the SEQ from
+    both the output and Data folders instead, for testing without one.
+    """
+    from tools.core.plugin_edit import write_seq
+
+    def one(name):
+        try:
+            path = _out_path(name)
+            data = DATA_DIR / 'Seq' / f"{path.stem}.seq"
+            if remove:
+                gone = [str(f) for f in (path.parent / 'SEQ' / f"{path.stem}.seq", data) if f.is_file()]
+                for f in gone:
+                    Path(f).unlink()
+                return {"removed": gone}
+            seq = write_seq(path)
+            if seq is None:
+                return {"seq": None, "note": "the plugin has no start-game-enabled quests of its own"}
+            res = {"seq": str(seq), "quests": seq.stat().st_size // 4}
+            if install:
+                data.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(seq, data)
+                res["installed"] = str(data)
+            return res
         except (ValueError, FileNotFoundError) as e:
             return {"error": str(e)}
 

@@ -153,7 +153,10 @@ CONDITION_FUNCTIONS = {'GetItemCount': 47, 'GetStage': 58, 'GetInFaction': 71, '
                        # take a form: quest, race, faction, voice type, spell, perk, cell, furniture, scene
                        'GetQuestRunning': 56, 'GetQuestCompleted': 543, 'GetIsRace': 69, 'GetFactionRank': 73,
                        'GetIsVoiceType': 426, 'HasSpell': 264, 'HasPerk': 448, 'GetInCell': 67,
-                       'IsCurrentFurnitureObj': 163, 'IsScenePlaying': 248, 'GetInSameCell': 32}
+                       'IsCurrentFurnitureObj': 163, 'IsScenePlaying': 248, 'GetInSameCell': 32,
+                       # takes an enum, not a form: give "sex": "male" or "female" (run_on "target" for the player)
+                       'GetIsSex': 70}
+SEXES = {'male': 0, 'female': 1}
 NO_PARAM_FUNCTIONS = {'IsDoingFavor', 'IsSneaking', 'GetRandomPercent', 'IsInInterior', 'GetDayOfWeek',
                       'GetSitting', 'IsInCombat', 'IsTalking', 'IsInDialogueWithPlayer', 'IsRaining', 'IsSnowing',
                       'GetCurrentTime', 'GetHealthPercentage', 'IsRidingMount', 'GetDisabled', 'IsTrespassing',
@@ -921,14 +924,22 @@ class NpcBuilder:
             op = CONDITION_OPS.get(c.get('op', '=='))
             run_on = RUN_ON.get(c.get('run_on', 'subject'))
             if func is None or op is None or run_on is None or (
-                    'form' not in c and 'actor_value' not in c and c.get('function') not in NO_PARAM_FUNCTIONS):
+                    'form' not in c and 'actor_value' not in c and 'sex' not in c
+                    and c.get('function') not in NO_PARAM_FUNCTIONS):
                 p.errors.append(f"{label}: needs function {list(CONDITION_FUNCTIONS)}, form (or actor_value "
-                                f"for GetActorValue), op {list(CONDITION_OPS)} and run_on {list(RUN_ON)}")
+                                f"for GetActorValue, sex for GetIsSex), op {list(CONDITION_OPS)} and run_on "
+                                f"{list(RUN_ON)}")
+                continue
+            if c.get('function') == 'GetIsSex' and c.get('sex') not in SEXES:
+                p.errors.append(f"{label}: GetIsSex needs sex {list(SEXES)}")
                 continue
             try:
                 param2 = int(c.get('param2', 0))
             except (ValueError, TypeError):
                 p.errors.append(f"{label}: param2 must be an integer (e.g. the stage for GetStageDone)")
+                continue
+            if c.get('function') == 'GetIsSex':
+                out.append((func, -SEXES[c['sex']], op, float(c.get('value', 1)), run_on, param2))
                 continue
             if c.get('function') in NO_PARAM_FUNCTIONS:
                 out.append((func, 0, op, float(c.get('value', 1)), run_on, param2))
@@ -1627,7 +1638,7 @@ class NpcBuilder:
         if quest is None:
             quest = Record('QUST', FormID(self.own(new_id())), 0)
             quest.add_subrecord('EDID', z(qid))
-            quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, 50, 0, 0, 0))
+            quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x11, 50, 0, 0, 0))
             quest.add_subrecord('NEXT', b'')
             quest.add_subrecord('ANAM', struct.pack('<I', 1))
             quest.add_subrecord('ALST', struct.pack('<I', 0))

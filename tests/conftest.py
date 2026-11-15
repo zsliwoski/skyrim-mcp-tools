@@ -12,6 +12,25 @@ def pytest_collection_modifyitems(items):
             item.add_marker(skip)
 
 
+@pytest.fixture(scope="session")
+def fake_data_dir(tmp_path_factory):
+    """A Data folder holding only the tiny fixture Skyrim.esm from fake_master.py."""
+    import fake_master
+    mp = pytest.MonkeyPatch()
+    mp.setenv("ESPLIB_CACHE_DIR", str(tmp_path_factory.mktemp("esplib_cache")))
+    data = tmp_path_factory.mktemp("data")
+    fake_master.build(data / "Skyrim.esm")
+    yield data
+    mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def use_fake_master(request, monkeypatch):
+    """Tests marked fakegame run against the fixture master instead of the real game files."""
+    if "fakegame" in request.keywords:
+        monkeypatch.setattr(server, "DATA_DIR", request.getfixturevalue("fake_data_dir"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def keep_models_cached():
     """Writes normally drop the cached models, which would reload Skyrim.esm after every test."""
