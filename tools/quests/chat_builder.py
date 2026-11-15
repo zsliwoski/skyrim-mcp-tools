@@ -14,6 +14,7 @@ ACTOR_FLAGS = 0x2A
 ACTION_FLAGS = 0x8000
 PHASE_TIMER = 200
 ALIAS_OPTIONAL_REUSE = 0x2 | 0x8
+EMPTY_SCHR = bytes(18) + b'\x01\x00'  # the empty script header the CK writes for every scene begin/end script
 SCENE_TOPIC_DATA = b'\x00\x02\x0e\x00'
 SPEAKER, PARTNER = 'speaker', 'partner'
 GET_IS_SEX = 70
@@ -82,7 +83,7 @@ def trigger_conditions(spec):
               {'function': 'IsInDialogueWithPlayer', 'op': '==', 'value': 0}]
     if spec.get('partner_reference'):
         conds.append({'function': 'GetDistance', 'form': spec['partner_reference'], 'op': '<',
-                      'value': spec.get('distance', 900), 'run_on': 'target'})
+                      'value': spec.get('distance', 900), 'run_on': 'player'})
     pct = spec.get('random_percent', 10)
     if pct:
         conds.append({'function': 'GetRandomPercent', 'op': '<=', 'value': pct})
@@ -119,10 +120,18 @@ def scene_record(fid, editor_id, quest_fid, aliases, actions):
     rec = Record('SCEN', FormID(fid), 0)
     rec.add_subrecord('EDID', z(editor_id))
     rec.add_subrecord('FNAM', struct.pack('<I', SCENE_FLAGS))
+    def script_stub():
+        rec.add_subrecord('SCHR', EMPTY_SCHR)
+        rec.add_subrecord('QNAM', fid_bytes(quest_fid))
+
     for _ in actions:
-        for sig, data in (('HNAM', b''), ('NAM0', b'\0'), ('NEXT', b''), ('NEXT', b''),
-                          ('WNAM', struct.pack('<I', PHASE_TIMER)), ('HNAM', b'')):
-            rec.add_subrecord(sig, data)
+        rec.add_subrecord('HNAM', b'')
+        rec.add_subrecord('NAM0', b'\0')
+        for _ in range(2):
+            rec.add_subrecord('NEXT', b'')
+            script_stub()
+        rec.add_subrecord('WNAM', struct.pack('<I', PHASE_TIMER))
+        rec.add_subrecord('HNAM', b'')
     for alias in aliases:
         rec.add_subrecord('ALID', struct.pack('<I', alias))
         rec.add_subrecord('LNAM', struct.pack('<I', 0))
@@ -142,6 +151,9 @@ def scene_record(fid, editor_id, quest_fid, aliases, actions):
         rec.add_subrecord('DEMO', struct.pack('<I', 0))
         rec.add_subrecord('DEVA', struct.pack('<I', 0))
         rec.add_subrecord('ANAM', b'')
+    script_stub()
+    rec.add_subrecord('NEXT', b'')
+    script_stub()
     rec.add_subrecord('PNAM', fid_bytes(quest_fid))
     rec.add_subrecord('INAM', struct.pack('<I', len(actions)))
     rec.add_subrecord('VNAM', struct.pack('<4I', 3, 3, 3, 3))

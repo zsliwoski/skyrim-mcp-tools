@@ -6,7 +6,7 @@ from esplib.record import Record
 from esplib.utils import FormID
 
 from tools.core.plugin_edit import Target, hi, resolve_target_path
-from tools.npcs.npc_builder import CONDITION_FUNCTIONS, CONDITION_OPS, RUN_ON, Plan, fid_bytes, z
+from tools.npcs.npc_builder import CONDITION_FUNCTIONS, CONDITION_OPS, PLAYER_REF, RUN_ON, Plan, fid_bytes, z
 
 FACTION_HIDDEN = 0x1
 FACT_CRVA = bytes([1, 1]) + bytes(18)  # crime values, unused by a settings faction
@@ -16,7 +16,7 @@ INSERT_AFTER = ('PKDT', 'PSDT', 'CTDA', 'CIS1', 'CIS2')  # conditions belong aft
 
 def ctda(func, fid, op, value, run_on=0, param2=0):
     """One 32-byte CTDA: function index, local form ID parameter, operator index, value, run-on, second parameter."""
-    return struct.pack('<B3xfH2xIIIIi', op << 5, value, func, fid, param2, run_on, 0, -1)
+    return struct.pack('<B3xfH2xIIIIi', op << 5, value, func, fid, param2, run_on, PLAYER_REF if run_on == 2 else 0, -1)
 
 
 def make_faction(fid, editor_id, name, ranks, hidden=True):

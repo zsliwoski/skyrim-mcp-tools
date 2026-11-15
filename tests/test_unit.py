@@ -263,11 +263,14 @@ class TestNpcChat:
         assert [s.signature for s in rec.subrecords][-3:] == ["PNAM", "INAM", "VNAM"]
 
     def test_trigger_guards_and_new_conditions_are_known(self):
+        import struct
         from tools.npcs import npc_builder as nb
         from tools.quests.chat_builder import trigger_conditions
         conds = trigger_conditions(self.spec(partner_reference="Skyrim.esm:013487"))
         assert {c["function"] for c in conds} <= set(nb.CONDITION_FUNCTIONS)
-        assert any(c["function"] == "GetDistance" and c["run_on"] == "target" for c in conds)
+        assert any(c["function"] == "GetDistance" and c["run_on"] == "player" for c in conds)
+        from tools.records.ai_records import ctda
+        assert ctda(1, 0x13487, 4, 900.0, nb.RUN_ON["player"])[20:28] == struct.pack("<II", 2, 0x14)
         assert not any(c["function"] == "GetInFaction" for c in trigger_conditions(self.spec(hired=False)))
         for name in ("GetDayOfWeek", "GetSitting", "IsInCombat", "IsTalking", "IsRaining", "GetIsRace", "GetIsSex"):
             assert name in nb.CONDITION_FUNCTIONS

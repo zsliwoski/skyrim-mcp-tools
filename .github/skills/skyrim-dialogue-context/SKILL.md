@@ -22,6 +22,8 @@ Vanilla gates many of these by voice type, so a custom voice type hears none unl
 Depth of reaction is organised into five immersion layers (base barks, player-aware, world-aware, social scenes, full coverage); see "Immersion layers" in `skyrim-dialogue`. Pick lines that suit where the NPC lives and what they would meet.
 
 ## Conditions by situation
+Idle and bark lines have no target, so `run_on: "target"` never matches there; vanilla runs player checks on Reference = PlayerRef, which is `run_on: "player"`. Use `"target"` only for topics the player starts.
+
 | Situation | Condition | Notes |
 |-----------|-----------|-------|
 | Cave, ruin, camp, mine, crypt, fort | `LocationHasKeyword` + `LocSetCave`, `LocSetNordicRuin`, `LocTypeBanditCamp`, `LocTypeDraugrCrypt`, `LocTypeMine`, `LocTypeMilitaryFort`... | Function 562. Pair with `IsInInterior == 0` for an approach line, `== 1` for an inside line |
@@ -30,7 +32,7 @@ Depth of reaction is organised into five immersion layers (base barks, player-aw
 | On the road | no place condition | Vanilla's unconditioned follower idles |
 | Quest progress | `GetStage` + quest, op `>=`, or `GetStageDone` + quest with `param2` = stage, `value` 1 | e.g. `MQ104` >= 80 dragon killed, `MQ306` > 0 victory, `DB01` >= 200 |
 | World event | `GetGlobalValue` + global | e.g. `TGCrimeWhiterunTaken` |
-| Player's gear | `GetEquipped` + item/formlist, `run_on: "target"` | e.g. `DA07MehrunesRazor`, `ArmorStormcloakCuirass` |
+| Player's gear | `GetEquipped` + item/formlist, `run_on: "player"` | e.g. `DA07MehrunesRazor`, `ArmorStormcloakCuirass` |
 | Speaker's faction | `GetInFaction` + faction | `CurrentHireling`, guard factions |
 | Favor active | `IsDoingFavor` | no `form` |
 | Companion state | `GetActorValue`, `actor_value: 95` | Wait/Follow |
@@ -45,7 +47,7 @@ Vanilla's `HirelingIdles` mostly keys on places (caves, ruins, named locations) 
 
 - **Place knowledge:** `idle` + `CurrentHireling == 1` + `GetInCurrentLoc` on the location. e.g. in Riverwood: "Lucan keeps the Trader going on his own, you know."
 - **Person nearby:** `idle` + `CurrentHireling == 1` + `GetDistance` to the person's reference `< 1500`. e.g. "That's Faendal. He and Sven both fancy the same girl."
-- **Run `GetDistance` on the player (`run_on: "target"`)** when the line is about the player walking up to a landmark or person (the distance is then player to that reference). Without it the distance is measured from the speaker. A line meant to fire when the player is right beside the person uses a small radius (about 100); a general "he's in view" line can use ~1500.
+- **Run `GetDistance` on the player (`run_on: "player"`)** when the line is about the player walking up to a landmark or person (the distance is then player to that reference). Without it the distance is measured from the speaker. A line meant to fire when the player is right beside the person uses a small radius (about 100); a general "he's in view" line can use ~1500.
 - **Cave approach vs inside:** split cave comments by `IsInInterior`. `LocationHasKeyword LocSetCave` + `IsInInterior == 0` is the approach line outside the entrance ("Looks like a cave up ahead"); `IsInInterior == 1` is the inside line ("Mind your head in here"). Without the interior check the outside wording fires inside too.
 - **Random throttle:** add `GetRandomPercent <= N` (e.g. 30) so a landmark line doesn't fire every time the engine rolls an idle. Stack two `GetRandomPercent` conditions on nearly every idle to keep them rare; one upper bound does the same job here.
 - Add `IsSneaking == 0` and keep several variants in one `answers` list so they rotate; `idle` entries carry vanilla's reset hours so they don't spam.
@@ -64,9 +66,9 @@ Observed in a full-featured follower mod (hundreds of INFOs, grouped by what the
 | Cave interior vs approach | `LocSetCave` + `IsInInterior == 1` (12 lines) and `== 0` (7 lines), plus other `LocSet*` keywords with and without `IsInInterior` | ✔ |
 | Person nearby | `GetDistance` to a placed ref (Nazeem, Faendal, Farkas, Aela, Cicero, Enthir, Heimskr, the housecarl), `< 100`, run on the player | ✔ |
 | Player's race and sex | `GetIsRace` and `GetIsSex` on the player (greetings and goodbyes keyed to the player's race) | no |
-| Player's level and skills | `GetLevel >= 5/10/12`, `GetActorValue` (index) `> 50`/`> 70` on skill AVs, on the player | `GetActorValue` ✔ with `run_on: "target"` |
+| Player's level and skills | `GetLevel >= 5/10/12`, `GetActorValue` (index) `> 50`/`> 70` on skill AVs, on the player | `GetActorValue` ✔ with `run_on: "player"` |
 | Player's gear | Full armour sets (four `GetEquipped` conditions: helmet, gauntlets, boots, cuirass) for daedric, draugr, dwarven, iron, steel plate; `WornHasKeyword` for "wearing no body armour" | `GetEquipped` ✔; `WornHasKeyword` no |
-| Player's inventory | `GetItemCount` for Skooma (>= 1 or >= 5), Nirnroot, Dwarven oil, `Gold001 >= 15000` | ✔ with `run_on: "target"` |
+| Player's inventory | `GetItemCount` for Skooma (>= 1 or >= 5), Nirnroot, Dwarven oil, `Gold001 >= 15000` | ✔ with `run_on: "player"` |
 | Player's active magic | `HasMagicEffect` for summoned flame, frost and storm atronachs | no |
 | Crafting | `IsCurrentFurnitureObj` on the player with a crafting keyword (forge, alchemy, enchanting, cooking pot, tanning rack, grindstone) | no |
 | Player is a werewolf | `GetIsRace WerewolfBeastRace` | no |

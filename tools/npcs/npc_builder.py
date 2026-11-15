@@ -93,7 +93,8 @@ FIELDS = {
                 'Dialogue entries also accept "conditions": [{"function": GetItemCount|GetInFaction|'
                 'GetGlobalValue|GetStage|GetStageDone, "form": id, "op": ==|!=|>|>=|<|<=, "value": n, '
                 '"param2": integer second parameter (the stage for GetStageDone), '
-                '"run_on": "subject"|"target"}] (target is the player).',
+                '"run_on": "subject"|"target"|"player"}] (target is the player only while talking; in idle '
+                'and bark lines use "player" for conditions about the player, e.g. gear or distance).',
     'combat_lines': 'true adds engine-spoken combat reactions (attack, hit grunts, taunts, flee, bleedout, '
                     'death, combat/alert transitions) with several random lines each. Also available as '
                     'dialogue kinds: attack, power_attack, bash, hit, flee, bleedout, death, block, taunt, '
@@ -164,7 +165,10 @@ NO_PARAM_FUNCTIONS = {'IsDoingFavor', 'IsSneaking', 'GetRandomPercent', 'IsInInt
 REFERENCE_FUNCTIONS = {'GetDistance', 'GetInSameCell'}  # param is a placed reference ('Skyrim.esm:013487')
 WAITING_FOR_PLAYER = 0x5F  # actor value the vanilla follower script sets to 1 on FollowerWait
 CONDITION_OPS = {'==': 0, '!=': 1, '>': 2, '>=': 3, '<': 4, '<=': 5}
-RUN_ON = {'subject': 0, 'target': 1}
+# "target" is only the player while talking to them; idle and bark lines have no target, so vanilla's idles run
+# player checks as Reference = PlayerRef ("player", run-on 2).
+RUN_ON = {'subject': 0, 'target': 1, 'player': 2}
+PLAYER_REF = 0x14
 
 
 def follower_entries(cost, base=0):
@@ -1710,7 +1714,8 @@ class NpcBuilder:
                 for func, fid, op, value, run_on, *rest in extra:
                     param2 = rest[0] if rest else 0
                     rec.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', op << 5, value, func,
-                                                          self.lid(fid), param2, run_on, 0, -1))
+                                                          self.lid(fid), param2, run_on,
+                                                          PLAYER_REF if run_on == 2 else 0, -1))
                 return rec
             def attach_script(rec):
                 code, props = script

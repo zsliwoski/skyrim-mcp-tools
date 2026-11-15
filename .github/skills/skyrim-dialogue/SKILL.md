@@ -37,6 +37,18 @@ edit_npc("MyNpc", {"quest_editor_id": "MyNpcDialogueQuest", "dialogue": [
   "MyPlugin.esp")
 ```
 
+### Keep the top-level menu short: nest related prompts
+Do not put every prompt in the main conversation list. When three or more prompts belong together, make one parent topic and hang the rest off it with `child_of`, so the player sees one entry instead of many:
+- **Quest info:** one entry per quest, e.g. "About the sweet roll thief...", with the questions under it ("Where do I find this giant?"). Give the parent and its children the same stage conditions. Quest actions (ask for the job, turn it in, "any update") can stay top-level.
+- **Follower options:** one parent per theme, as `add_follower_controls` does for follow distance and fighting style ("Let's talk about how you follow me.", "...how you fight."). Put the horse topics under "About your horse..." (hired condition on the parent, each child keeps its own rank condition).
+- **Always add a "Never mind." child** (condition-matched to the parent) so the player can back out.
+- A parent's reply should be a short invitation ("What would you like to know?"). Children are offered only after it, not in the main list.
+- **Closing vs returning:**
+  - Settings and action children use `goodbye: true`, like vanilla, since the player is done.
+  - Info branches should let the player ask several questions. Each question's INFO links back to its siblings and to "Never mind." (TCLT entries on the INFO), and "Never mind." has no `goodbye` and no links, which returns the player to the main conversation options.
+- The builder's `child_of` links children only from the parent. It does not yet loop siblings back to each other or build a non-closing "Never mind." chain, so an info branch that allows repeated questions has to be patched with raw INFO `TCLT` edits (`get_record` / `edit_record`). State this limit to the user instead of silently leaving children that close after one question.
+- Children are not shown in the top-level menu and need no `DLBR` of their own; they take the parent's branch in `BNAM`. When moving an existing topic under a parent, repoint its `BNAM` at the parent's `DLBR` and delete its old `DLBR`.
+
 Rules the tools follow:
 - Re-using `quest_editor_id` adds topics to the existing quest instead of making a new one.
 - Scripts are compiled with the Creation Kit compiler (`SKYRIM_CK_DIR`, default the `Skyrim` Steam folder) into `Scripts` beside the plugin; `package_plugin` includes them.
@@ -136,4 +148,4 @@ Check in this order, using the in-game console:
 6. Script not firing: confirm the `.pex` is in the mod's `Scripts` folder and the script name matches the INFO `VMAD`.
 
 ## Known gaps
-No branching or follow-up topics, no per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. State these rather than guessing when asked to do them.
+No sibling-to-sibling loops inside a branch (see "Keep the top-level menu short"), no per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. State these rather than guessing when asked to do them.
