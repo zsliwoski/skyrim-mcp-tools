@@ -17,6 +17,7 @@ SUBJECT, TARGET = 0, 1
 QUEST_TYPE_MISC = 6
 QUEST_OBJECT = 4
 PLAYER_NPC = 7
+REFUSED_STAGE = 5
 
 REQUIRED = ('quest_editor_id', 'quest_name', 'item_editor_id', 'item_name', 'item_clone_from', 'placement',
             'log', 'objectives', 'offer', 'reminder', 'turn_in', 'done')
@@ -32,6 +33,16 @@ def check_spec(spec):
         d = spec.get(k)
         if k in spec and not (isinstance(d, dict) and d.get('prompt') and d.get('lines')):
             errors.append(f"{k} needs a prompt and lines")
+    offer = spec.get('offer')
+    if isinstance(offer, dict) and 'options' in offer:
+        for k in ('options', 'accept', 'refusal', 'revisit'):
+            if k not in offer:
+                errors.append(f"offer with options also needs {k!r}")
+        for o in list(offer.get('options') or []) + [offer.get('accept') or {}, offer.get('refusal') or {}]:
+            if not (isinstance(o, dict) and o.get('prompt') and o.get('lines')):
+                errors.append("each offer option, the accept and the refusal need a prompt and lines")
+        if not (offer.get('revisit') or {}).get('lines'):
+            errors.append("offer revisit needs lines")
     for k in ('10', '20', '30'):
         if 'log' in spec and k not in {str(i) for i in spec['log']}:
             errors.append(f"log needs an entry for stage {k}")
@@ -136,10 +147,14 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
     q.add_subrecord('FULL', z(spec['quest_name']))
     q.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, 50, 0, 0, QUEST_TYPE_MISC))
     q.add_subrecord('NEXT', b'')
-    for idx, text in sorted((int(k), v) for k, v in spec['log'].items()):
+    log = {int(k): v for k, v in spec['log'].items()}
+    if 'options' in spec['offer']:
+        log[REFUSED_STAGE] = None  # hidden stage marking a declined offer, with no journal entry
+    for idx, text in sorted(log.items()):
         q.add_subrecord('INDX', struct.pack('<HBB', idx, 0, 0))
         q.add_subrecord('QSDT', struct.pack('<B', 1 if idx >= 30 else 0))
-        q.add_subrecord('CNAM', z(text))
+        if text is not None:
+            q.add_subrecord('CNAM', z(text))
     for idx, text in sorted((int(k), v) for k, v in spec['objectives'].items()):
         q.add_subrecord('QOBJ', struct.pack('<H', idx))
         q.add_subrecord('FNAM', struct.pack('<I', 0))
@@ -178,7 +193,34 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
         start.append("(q.GetAlias(1) as ReferenceAlias).ForceRefTo(ItemRef as ObjectReference)")
     start += ["q.SetStage(10)", "q.SetObjectiveDisplayed(10)"]
     offer_props = [('FetchQuest', -quest_fid)] + ([('ItemRef', -ref.form_id.value)] if spec.get('marker', True) else [])
-    topics.append(('topic', o['prompt'], list(o['lines']), ("\n".join(start), offer_props), [stage(EQ, 0)]))
+    if 'options' in o:
+        # roleplay stances: the pitch offers only the stance replies; every stance reply is followed by the accept and
+        # refusal prompts, and accepting is what starts the quest. A refusal parks the quest at a hidden stage, and
+        # the revisit pitch then offers accept and refusal directly
+        refuse_code = ("Quest q = FetchQuest as Quest", f"q.SetStage({REFUSED_STAGE})")
+
+        def decision(conds, parent, also_from=()):
+            """Accept and refusal topics, offered after the topic at index `parent` (and every `also_from`)."""
+            link = {'child_of': parent, 'also_from': list(also_from)}
+            topics.append(('topic', o['accept']['prompt'], list(o['accept']['lines']),
+                           ("\n".join(start), offer_props), conds, dict(link)))
+            topics.append(('topic', o['refusal']['prompt'], list(o['refusal']['lines']),
+                           ("\n".join(refuse_code), [('FetchQuest', -quest_fid)]), conds,
+                           dict(link, goodbye=True)))
+
+        conds = [stage(EQ, 0)]
+        pitch = len(topics)
+        topics.append(('topic', o['prompt'], list(o['lines']), None, conds))
+        first = len(topics)
+        for opt in o['options']:
+            topics.append(('topic', opt['prompt'], list(opt['lines']), None, conds, {'child_of': pitch}))
+        decision(conds, first, range(first + 1, first + len(o['options'])))
+        conds = [stage(EQ, REFUSED_STAGE)]
+        pitch = len(topics)
+        topics.append(('topic', o['revisit'].get('prompt', "About that errand..."), list(o['revisit']['lines']), None, conds))
+        decision(conds, pitch)
+    else:
+        topics.append(('topic', o['prompt'], list(o['lines']), ("\n".join(start), offer_props), [stage(EQ, 0)]))
     topics.append(('topic', r['prompt'], list(r['lines']), None, [stage(GE, 10), stage(LT, 30), has(LT, 1)]))
     code = ["Game.GetPlayer().RemoveItem(Item, 1)"]
     props = [('FetchQuest', -quest_fid), ('Item', -item_fid)]

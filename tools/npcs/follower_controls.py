@@ -45,6 +45,7 @@ TEXT = {
     'style_0': ("Fight the way you normally do.", "As you say."),
     'style_2': ("Don't hold back in a fight.", "No mercy, then."),
     'exit': ("Never mind.", "As you wish."),
+    'horse_menu': ("About your horse...", "What about the horse?"),
     'horse_gift': ("Take my horse. She's yours now.", "A fine gift. I'll look after her."),
     'horse_reclaim': ("I'd like my horse back.", "Of course. She was only ever on loan."),
     'horse_find': ("Keep an eye out for a horse you could ride.", "I'll see what's grazing nearby."),
@@ -305,15 +306,29 @@ def add_follower_controls(b, spec, target_plugin):
         props = [('Control', -quest.form_id.value)]
         share = (GET_FACTION_RANK, -factions['horse'], 0, 0.0, 0)
         riding = (GET_FACTION_RANK, -factions['horse'], 0, 1.0, 0)
+        horse = []
         if want_gift:
-            topics.append(_entry(text, 'horse_gift', [hired, share], script=(f"{call}.GiftHorse(akSpeaker)", props)))
-            topics.append(_entry(text, 'horse_reclaim', [hired, riding],
-                                 script=(f"{call}.ReclaimHorse(akSpeaker)", props)))
+            horse.append(('horse_gift', [hired, share], f"{call}.GiftHorse(akSpeaker)"))
+            horse.append(('horse_reclaim', [hired, riding], f"{call}.ReclaimHorse(akSpeaker)"))
         if want_radar:
-            topics.append(_entry(text, 'horse_find', [hired, share], script=(f"{call}.FindHorse(akSpeaker)", props)))
+            horse.append(('horse_find', [hired, share], f"{call}.FindHorse(akSpeaker)"))
         if want_horse:
-            topics.append(_entry(text, 'horse_share', [hired, share], script=(f"{call}.ShareHorse(akSpeaker)", props)))
-            topics.append(_entry(text, 'horse_walk', [hired, riding], script=(f"{call}.StopSharing(akSpeaker)", props)))
+            horse.append(('horse_share', [hired, share], f"{call}.ShareHorse(akSpeaker)"))
+            horse.append(('horse_walk', [hired, riding], f"{call}.StopSharing(akSpeaker)"))
+        # keep the main menu short: nest the horse topics under one "About your horse..." parent, unless a
+        # parent from an earlier run exists (new topics cannot be attached to it, so they stay top-level)
+        menu_prompt = text['horse_menu'][0]
+        nested = bool(horse) and not any(r.signature == 'DIAL' and (r.get_subrecord('FULL') is not None)
+                         and bytes(r.get_subrecord('FULL').data).rstrip(b'\0').decode('cp1252') == menu_prompt
+                         for r in plugin.records)
+        base = len(topics)
+        if nested:
+            topics.append(_entry(text, 'horse_menu', [hired]))
+        for key, conds, code in horse:
+            topics.append(_entry(text, key, conds, parent=base if nested else None, script=(code, props),
+                                 goodbye=nested))
+        if nested:
+            topics.append(_entry(text, 'exit', [hired], parent=base))
 
     if want_distance:
         topics += settings_topics(text, hired, factions['distance'], 'distance', len(DISTANCES), len(topics))

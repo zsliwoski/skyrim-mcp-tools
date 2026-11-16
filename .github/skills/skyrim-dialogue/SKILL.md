@@ -46,8 +46,21 @@ Do not put every prompt in the main conversation list. When three or more prompt
 - **Closing vs returning:**
   - Settings and action children use `goodbye: true`, like vanilla, since the player is done.
   - Info branches should let the player ask several questions. Each question's INFO links back to its siblings and to "Never mind." (TCLT entries on the INFO), and "Never mind." has no `goodbye` and no links, which returns the player to the main conversation options.
-- The builder's `child_of` links children only from the parent. It does not yet loop siblings back to each other or build a non-closing "Never mind." chain, so an info branch that allows repeated questions has to be patched with raw INFO `TCLT` edits (`get_record` / `edit_record`). State this limit to the user instead of silently leaving children that close after one question.
+- In the builder, `child_of` links children from the parent. Set `"loop": true` on the parent so every child also links to its siblings (the player can ask several questions), and `"ends_branch": true` on the "Never mind." child so it has no links and returns to the main options. Add `"goodbye": true` instead if Never mind should end the conversation. Branches that already exist from earlier calls need raw INFO `TCLT` edits.
 - Children are not shown in the top-level menu and need no `DLBR` of their own; they take the parent's branch in `BNAM`. When moving an existing topic under a parent, repoint its `BNAM` at the parent's `DLBR` and delete its old `DLBR`.
+
+### Roleplay-friendly quest replies
+When an NPC explains their predicament or goal (the quest pitch), don't offer only "I'll help" / "Not interested". Give the player replies that let them play different characters, each with its own in-voice prompt and an NPC response that reacts to that stance, before the quest is accepted. Offer three or four archetypes that suit the NPC, but offer varied player expression in the prompts. Example for a pirate hunting treasure:
+- **Innocent:** good-natured, hopes he will mend his ways.
+- **Kindred Spirit:** a fellow rogue, in for the adventure.
+- **Rival:** a skeptic who will challenge him every step of the way.
+- **Wicked:** amoral, serves their own ends.
+
+Adapt the archetypes to the NPC and quest (a healer's plea might offer the Compassionate, the Pragmatist, the Mercenary). These names are for the author only: never put the archetype label in a player prompt or an NPC line. Write each prompt as the in-world words that character would say ("Those people sound like they need you."), so the choice reads as roleplay, not a menu of labels.
+
+The stance replies are not the accept button. They are things the player can say on the way to a decision, and the pitch offers only them. The NPC answers each one, and only after that answer are the plain accept ("Very well. I'll fetch the tome.") and refuse ("I can't help you right now.") prompts offered; accepting alone starts the quest. After a refusal, the revisit line ("Have you given it more thought?") offers accept and refuse straight away, without the stance replies. Keep prompts short and nest them as sibling choices (see the nesting rules above). Where later lines allow it, let the NPC refer back to the stance chosen.
+
+The player must also be able to refuse, and a refusal is not final. Refusing sets a hidden quest stage (5, no journal entry). The pitch topic is then replaced by a second one, conditioned on that stage, with a short, to-the-point prompt ("About that tome...") instead of repeating the opener. Its NPC line is the revisit ("Have you given it more thought?"), followed straight away by accept and refuse. This is the standard flow for a fetch-quest errand and `add_fetch_quest` builds it (see `skyrim-quest-authoring`); for other quest shapes build it the same way with `GetStage` conditions and a `SetStage` on refusal.
 
 Rules the tools follow:
 - Re-using `quest_editor_id` adds topics to the existing quest instead of making a new one.
@@ -148,4 +161,4 @@ Check in this order, using the in-game console:
 6. Script not firing: confirm the `.pex` is in the mod's `Scripts` folder and the script name matches the INFO `VMAD`.
 
 ## Known gaps
-No sibling-to-sibling loops inside a branch (see "Keep the top-level menu short"), no per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. State these rather than guessing when asked to do them.
+No per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. State these rather than guessing when asked to do them.

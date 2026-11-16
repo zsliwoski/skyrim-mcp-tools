@@ -15,6 +15,7 @@ For reading existing quests see `skyrim-quest-structure`; for dialogue details `
    - a QUST with stages 10/20/30, objectives 10/20 (20 targets the NPC alias),
    - four topics: offer (stage 0), reminder (stage 10-29 and no item), turn-in (has the item; takes it, pays `reward_gold`, completes the quest), done (stage 30).
    Quest topics stay visible while the NPC is a hired follower.
+   For roleplay replies (see `skyrim-dialogue`), give `offer` `options` (list of `{prompt, lines}` stance replies that only talk and never start the quest), `accept` `{prompt, lines}` (starts the quest) and `refusal` `{prompt, lines}`, both offered only after a stance reply, and `revisit` `{lines, prompt}` (prompt defaults to "About that errand..."). A refusal sets hidden stage 5, and the revisit topic then replaces the pitch with a short prompt (not the opening question again, e.g. "About that tome...") and a line like "Have you given it more thought?", offering accept and refusal directly.
 3. **Anything else**: `create_record(plugin, signature, editor_id, subrecords)` writes any record type from an ordered subrecord list. Run `get_record` on a similar vanilla record first and copy its subrecord order and sizes. Form references resolve by editor ID and add masters.
 4. **Other quest shapes**: `add_quest(kind, npc, spec, plugin)` is the single entry point (`kind` = `fetch`, `kill` or `plant`; specs are on the per-kind tools).
    - `kill`: persistent actor with an `OnDeath` script, side quest, offer/during/turn-in/done topics, gold reward.
@@ -48,6 +49,7 @@ For reading existing quests see `skyrim-quest-structure`; for dialogue details `
 ## Editing an existing quest
 **Always prefer small in-place edits over a full rebuild.** A rebuild is slow (the guild plugin takes ~15 minutes), re-rolls form IDs and risks regressions. Use `edit_text`, `edit_condition`, `edit_script`, `edit_record` or `edit_npc` for any change to text, conditions, scripts or fields, even many of them in a row. Rebuild only when a record's structure must change and no edit tool can do it.
 Edit in place first; rebuild only when records change shape.
+- Don't write and run custom Python to rebuild a whole plugin (recreate the NPC, rerun the quest builder, clear stale scripts, repackage) just to change a few records such as dialogue text, prompts or links. Having a plan is fine, but that route burns context and re-rolls form IDs. Use `edit_text`, `edit_condition` or `edit_npc` for these; if no tool can make the change, extend the tool or builder once rather than scripting around it.
 - Text (book, dialogue, journal, names): `list_texts` then `edit_text`. Check lore with `lint_text` (`skyrim-lore-writing`).
 - Conditions (e.g. stage a topic appears at): `list_conditions` then `edit_condition`.
 - Scripts: `edit_script` (patch and recompile; `skyrim-script-patterns`).

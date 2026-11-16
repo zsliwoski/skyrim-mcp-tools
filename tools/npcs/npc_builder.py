@@ -87,7 +87,10 @@ FIELDS = {
                 '"properties": {name: form identifier} usable in the code as Form properties}. '
                 'Scripts are compiled with the Creation Kit compiler into the output Scripts folder. '
                 'Optional "blocking": true (prompt-less topic whose branch blocks other topics while its '
-                'conditions hold) and "child_of": index of an earlier topic entry (offered only after its reply).',
+                'conditions hold) and "child_of": index of an earlier topic entry (offered only after its reply). '
+                'Set "loop": true on a parent so each child reply offers the other children again (ask several '
+                'questions); a child with "ends_branch": true (a "Never mind.") offers nothing and, without '
+                '"goodbye", returns to the main conversation options.',
     'follower': 'Hirelable follower: {"cost": gold (default 50)} or true. Adds dialogue to hire the NPC for '
                 'that gold (using the vanilla follower quest), plus wait, follow and dismiss topics. '
                 'Dialogue entries also accept "conditions": [{"function": GetItemCount|GetInFaction|'
@@ -901,6 +904,12 @@ class NpcBuilder:
                 opts['goodbye'] = True
             if t.get('say_once'):
                 opts['say_once'] = True
+            if t.get('loop'):
+                opts['loop'] = True
+            if t.get('ends_branch'):
+                if parent is None:
+                    p.errors.append(f"dialogue[{i}]: ends_branch needs child_of")
+                opts['ends_branch'] = True
             if opts:
                 entry += (opts,)
             p.topics.append(entry)
@@ -969,7 +978,7 @@ class NpcBuilder:
         """(papyrus code, [(property name, absolute form id)]) run when the line ends, or None."""
         bad = [k for k in t if k not in ('kind', 'prompt', 'line', 'lines', 'give_items', 'code', 'properties',
                                          'conditions', 'show_while_following', 'answers', 'pick', 'child_of',
-                                         'blocking', 'goodbye', 'say_once')]
+                                         'blocking', 'goodbye', 'say_once', 'loop', 'ends_branch')]
         if bad:
             p.errors.append(f"dialogue[{i}]: unknown keys {bad}")
         code, props = [], []
@@ -1664,6 +1673,7 @@ class NpcBuilder:
         # topics may carry a sixth item {'child_of': index into p.topics}; children join the parent's branch
         # and are offered after the parent's response instead of in the top-level menu
         made_topics = {}
+        children, looping, enders = {}, set(), set()
         for n, topic in enumerate(p.topics, existing + 1):
             kind, prompt, lines, script, extra = topic[:5]
             opts = topic[5] if len(topic) > 5 else {}
@@ -1736,14 +1746,38 @@ class NpcBuilder:
                     attach_script(more)
                 group.records.append(more)
                 self.register(plugin, more)
-            made_topics[n - existing - 1] = (dial, info, branch_fid)
+            made_topics[n - existing - 1] = (dial, info, branch_fid, group)
             if parent_idx is not None:
+                children.setdefault(parent_idx, []).append(n - existing - 1)
                 pinfo = made_topics[parent_idx][1]
                 pos = next(i for i, s in enumerate(pinfo.subrecords) if s.signature == 'CNAM') + 1
                 pinfo.add_subrecord('TCLT', fid_bytes(dial.form_id.value))
                 pinfo.subrecords.insert(pos, pinfo.subrecords.pop())
+            # a topic offered after several earlier replies (e.g. accept/refuse after any stance reply)
+            for extra_idx in opts.get('also_from', []):
+                einfo = made_topics[extra_idx][1]
+                pos = next(i for i, s in enumerate(einfo.subrecords) if s.signature == 'CNAM') + 1
+                einfo.add_subrecord('TCLT', fid_bytes(dial.form_id.value))
+                einfo.subrecords.insert(pos, einfo.subrecords.pop())
+            if opts.get('loop'):
+                looping.add(n - existing - 1)
+            if opts.get('ends_branch'):
+                enders.add(n - existing - 1)
             made.extend([self.describe(dial), {'type': 'INFO', 'editor_id': None,
                                                'object_id': f"{info.form_id.value & 0xFFFFFF:06X}"}])
+        # a looping parent: every child reply offers the other children again (so the player can ask several
+        # questions), except children marked ends_branch, which offer nothing and so return to the main menu
+        for parent_idx in looping:
+            kids = children.get(parent_idx, [])
+            for kid in kids:
+                if kid in enders:
+                    continue
+                others = [made_topics[o][0].form_id.value for o in kids if o != kid]
+                for kid_info in made_topics[kid][3].records:
+                    pos = next(i for i, s in enumerate(kid_info.subrecords) if s.signature == 'CNAM') + 1
+                    for target in reversed(others):
+                        kid_info.add_subrecord('TCLT', fid_bytes(target))
+                        kid_info.subrecords.insert(pos, kid_info.subrecords.pop())
 
 
 class NpcLookup:
