@@ -59,6 +59,8 @@ class TestCreateNpc:
         assert len([r for r in plugin.records if r.signature == "DIAL"]) == 2
         assert flags[:3] == [2, 2, 2] and flags[3:] == [4, 4, 0]
 
+    @pytest.mark.compiler
+    @pytest.mark.usefixtures("compiler_available")
     def test_challenges_make_gated_responses_under_one_topic(self, sandbox):
         import struct
         res = server.create_npc({
