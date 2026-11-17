@@ -7,6 +7,7 @@ from esplib.record import Record
 from esplib.utils import FormID
 from esplib.vmad import PROP_OBJECT, VmadData, VmadObject, VmadProperty, VmadScript
 
+from tools.npcs import challenges
 from tools.npcs.npc_builder import Plan, fid_bytes, z
 from tools.papyrus.papyrus_build import compile_script
 from tools.core.plugin_edit import Target, hi, resolve_target_path
@@ -43,6 +44,10 @@ def check_spec(spec):
                 errors.append("each offer option, the accept and the refusal need a prompt and lines")
         if not (offer.get('revisit') or {}).get('lines'):
             errors.append("offer revisit needs lines")
+    if isinstance(offer, dict):
+        gate = (offer.get('accept') or {}) if 'options' in offer else offer
+        if gate.get('challenge') is not None:
+            errors += challenges.check(gate['challenge'], "the accepting reply's challenge")
     for k in ('10', '20', '30'):
         if 'log' in spec and k not in {str(i) for i in spec['log']}:
             errors.append(f"log needs an entry for stage {k}")
@@ -94,8 +99,11 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
     p.clone = src
     gold, _ = b.resolver.lookup('Gold001', ['MISC'])
     p.abs_ids.add(gold)
-
-    b.target = target
+    offer_spec = spec['offer']
+    gate = (offer_spec.get('accept') or {}) if 'options' in offer_spec else offer_spec
+    found = challenges.forms(b.resolver) if gate.get('challenge') else None
+    if found:
+        p.abs_ids.update(found.values())
     b.add_masters(plugin, p)
     n = len(plugin.header.masters)
     used = [r.form_id.value & 0xFFFFFF for r in plugin.records if hi(r.form_id.value) == n]
@@ -193,6 +201,15 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
         start.append("(q.GetAlias(1) as ReferenceAlias).ForceRefTo(ItemRef as ObjectReference)")
     start += ["q.SetStage(10)", "q.SetObjectiveDisplayed(10)"]
     offer_props = [('FetchQuest', -quest_fid)] + ([('ItemRef', -ref.form_id.value)] if spec.get('marker', True) else [])
+    def accepting(prompt, lines, script, conds, opts, challenge):
+        """The topic that starts the quest; with a challenge it is gated by the check, and a failed check
+        returns the player to the main menu to try again."""
+        if not challenge:
+            return ('topic', prompt, list(lines), script, conds, opts) if opts else \
+                ('topic', prompt, list(lines), script, conds)
+        prompt, variants = challenges.expand(challenge, prompt, list(lines), script, found)
+        return ('topic', prompt, list(lines), None, conds, dict(opts, variants=variants))
+
     if 'options' in o:
         # roleplay stances: the pitch offers only the stance replies; every stance reply is followed by the accept and
         # refusal prompts, and accepting is what starts the quest. A refusal parks the quest at a hidden stage, and
@@ -202,8 +219,8 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
         def decision(conds, parent, also_from=()):
             """Accept and refusal topics, offered after the topic at index `parent` (and every `also_from`)."""
             link = {'child_of': parent, 'also_from': list(also_from)}
-            topics.append(('topic', o['accept']['prompt'], list(o['accept']['lines']),
-                           ("\n".join(start), offer_props), conds, dict(link)))
+            topics.append(accepting(o['accept']['prompt'], o['accept']['lines'], ("\n".join(start), offer_props),
+                                    conds, dict(link), o['accept'].get('challenge')))
             topics.append(('topic', o['refusal']['prompt'], list(o['refusal']['lines']),
                            ("\n".join(refuse_code), [('FetchQuest', -quest_fid)]), conds,
                            dict(link, goodbye=True)))
@@ -220,7 +237,8 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
         topics.append(('topic', o['revisit'].get('prompt', "About that errand..."), list(o['revisit']['lines']), None, conds))
         decision(conds, pitch)
     else:
-        topics.append(('topic', o['prompt'], list(o['lines']), ("\n".join(start), offer_props), [stage(EQ, 0)]))
+        topics.append(accepting(o['prompt'], o['lines'], ("\n".join(start), offer_props), [stage(EQ, 0)], {},
+                                o.get('challenge')))
     topics.append(('topic', r['prompt'], list(r['lines']), None, [stage(GE, 10), stage(LT, 30), has(LT, 1)]))
     code = ["Game.GetPlayer().RemoveItem(Item, 1)"]
     props = [('FetchQuest', -quest_fid), ('Item', -item_fid)]
@@ -237,6 +255,7 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
     dq = spec.get('dialogue_quest_editor_id') or f"{npc.editor_id}DialogueQuest"
     if target.find_own(dq, ['QUST']) is None:
         dq = qid
+    b.target = target  # lets make_dialogue reuse the NPC's existing dialogue quest instead of adding a second one
     b.make_dialogue(plugin, {'editor_id': npc.editor_id, 'quest_editor_id': dq}, p, new_id, made, npc_fid)
 
     plugin.header.next_object_id = b.next_id

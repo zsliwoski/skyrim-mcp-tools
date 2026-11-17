@@ -137,6 +137,13 @@ def build(path):
     add(p, "MISC", 0x00000F, "Gold001", [("OBND", OBND), ("FULL", z("Gold")), ("DATA", struct.pack("<If", 1, 0.0))])
     add(p, "FACT", 0x0BD7AA, "CurrentHireling", [("FULL", z("Hireling")), ("DATA", bytes(4))])
     add(p, "QUST", 0x0750BA, "DialogueFollower", [("FULL", z("Follower")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])
+    add(p, "QUST", 0x05A6DC, "DialogueFavorGeneric", [("FULL", z("Favor")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])
+    add(p, "QUST", 0x047AE6, "DGIntimidateQuest", [("FULL", z("Brawl")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])
+    add(p, "DIAL", 0x047AC5, "DGIntimidateVictoryYes", [("PNAM", struct.pack("<f", 50.0)),
+        ("QNAM", struct.pack("<I", 0x047AE6)), ("DATA", bytes(4)), ("SNAM", b"CUST"), ("TIFC", bytes(4))])
+    for n, (edid, level) in enumerate((("SpeechVeryEasy", 0), ("SpeechEasy", 25), ("SpeechAverage", 50),
+                                       ("SpeechHard", 75), ("SpeechVeryHard", 100))):
+        add(p, "GLOB", 0x0D16A3 + n, edid, [("FNAM", b"f"), ("FLTV", struct.pack("<f", float(level)))])
 
     add(p, "RACE", 0x013746, "NordRace", [("FULL", z("Nord")), ("DESC", z("Nord"))])
 

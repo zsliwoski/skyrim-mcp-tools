@@ -16,6 +16,7 @@ from esplib import Plugin
 from esplib.record import GroupRecord, Record
 from esplib.utils import FormID
 
+from tools.npcs import challenges
 from tools.npcs.commentary_presets import (main_quest_entries, place_entries, preset_keys, time_entries,
                                            weather_entries)
 from tools.npcs.npc_tools import AGGRESSION, ASSISTANCE, CONFIDENCE, MORALITY, SKILLS
@@ -90,14 +91,24 @@ FIELDS = {
                 'conditions hold) and "child_of": index of an earlier topic entry (offered only after its reply). '
                 'Set "loop": true on a parent so each child reply offers the other children again (ask several '
                 'questions); a child with "ends_branch": true (a "Never mind.") offers nothing and, without '
-                '"goodbye", returns to the main conversation options.',
+                '"goodbye", returns to the main conversation options. Optional "challenge" on a player topic gates '
+                'it behind a check (use sparingly; most NPCs have none): {"type": "persuade" (+ "difficulty": '
+                'very_easy|easy|average|hard|very_hard, "luck": percent chance a too-low skill still passes), '
+                '"intimidate" (+ "brawl_on_failure": true), "brawl" (+ optional "amount" gold stake, and '
+                '"victory": {"prompt", "lines"} for the reply after the player wins) or "price" '
+                '(+ "amount" gold, also "gold"/"bribe"), "failure": {"lines": [...], "goodbye": bool}}. The topic\'s '
+                'own lines/code/give_items run on success; the prompt gets a vanilla-style tag such as (Persuade) or '
+                '(100 gold); the player can try again later.',
     'follower': 'Hirelable follower: {"cost": gold (default 50)} or true. Adds dialogue to hire the NPC for '
                 'that gold (using the vanilla follower quest), plus wait, follow and dismiss topics. '
                 'Dialogue entries also accept "conditions": [{"function": GetItemCount|GetInFaction|'
                 'GetGlobalValue|GetStage|GetStageDone, "form": id, "op": ==|!=|>|>=|<|<=, "value": n, '
-                '"param2": integer second parameter (the stage for GetStageDone), '
+                '"param2": integer second parameter (the stage for GetStageDone), "value_global": global '
+                'identifier compared instead of "value" (e.g. SpeechHard with GetActorValue and "actor_value": 17 '
+                'for Speechcraft), "or": true to OR with the next condition, '
                 '"run_on": "subject"|"target"|"player"}] (target is the player only while talking; in idle '
-                'and bark lines use "player" for conditions about the player, e.g. gear or distance).',
+                'and bark lines use "player" for conditions about the player, e.g. gear or distance). '
+                'GetIntimidateSuccess, GetBribeSuccess, IsIntimidatedbyPlayer and IsBribedbyPlayer take no form.',
     'combat_lines': 'true adds engine-spoken combat reactions (attack, hit grunts, taunts, flee, bleedout, '
                     'death, combat/alert transitions) with several random lines each. Also available as '
                     'dialogue kinds: attack, power_attack, bash, hit, flee, bleedout, death, block, taunt, '
@@ -159,12 +170,16 @@ CONDITION_FUNCTIONS = {'GetItemCount': 47, 'GetStage': 58, 'GetInFaction': 71, '
                        'GetIsVoiceType': 426, 'HasSpell': 264, 'HasPerk': 448, 'GetInCell': 67,
                        'IsCurrentFurnitureObj': 163, 'IsScenePlaying': 248, 'GetInSameCell': 32,
                        # takes an enum, not a form: give "sex": "male" or "female" (run_on "target" for the player)
-                       'GetIsSex': 70}
+                       'GetIsSex': 70,
+                       # engine-rolled outcomes of a speech challenge (no parameter, run on the speaker)
+                       'GetIntimidateSuccess': 655, 'GetBribeSuccess': 654, 'IsIntimidatedbyPlayer': 116,
+                       'IsBribedbyPlayer': 402}
 SEXES = {'male': 0, 'female': 1}
 NO_PARAM_FUNCTIONS = {'IsDoingFavor', 'IsSneaking', 'GetRandomPercent', 'IsInInterior', 'GetDayOfWeek',
                       'GetSitting', 'IsInCombat', 'IsTalking', 'IsInDialogueWithPlayer', 'IsRaining', 'IsSnowing',
                       'GetCurrentTime', 'GetHealthPercentage', 'IsRidingMount', 'GetDisabled', 'IsTrespassing',
-                      'IsMoving', 'GetDead', 'IsWeaponOut', 'GetLevel'}
+                      'IsMoving', 'GetDead', 'IsWeaponOut', 'GetLevel', 'GetIntimidateSuccess',
+                      'GetBribeSuccess', 'IsIntimidatedbyPlayer', 'IsBribedbyPlayer'}
 REFERENCE_FUNCTIONS = {'GetDistance', 'GetInSameCell'}  # param is a placed reference ('Skyrim.esm:013487')
 WAITING_FOR_PLAYER = 0x5F  # actor value the vanilla follower script sets to 1 on FollowerWait
 CONDITION_OPS = {'==': 0, '!=': 1, '>': 2, '>=': 3, '<': 4, '<=': 5}
@@ -892,8 +907,42 @@ class NpcBuilder:
             except UnicodeEncodeError:
                 p.errors.append(f"dialogue[{i}]: text contains characters outside Windows-1252")
             script = self.plan_script(p, t, i)
-            entry = (kind, t.get('prompt'), lines, script, self.plan_conditions(p, t, i))
+            prompt, variants, reply = t.get('prompt'), None, None
+            if t.get('challenge') is not None:
+                bad = challenges.check(t['challenge'], f"dialogue[{i}].challenge")
+                p.errors.extend(bad)
+                if not bad and kind != 'topic':
+                    p.errors.append(f"dialogue[{i}]: a challenge needs a player topic")
+                elif not bad and answers:
+                    p.errors.append(f"dialogue[{i}]: a challenge cannot be combined with answers")
+                elif not bad:
+                    try:
+                        found = challenges.forms(self.resolver)
+                    except ValueError as ex:
+                        p.errors.append(f"dialogue[{i}].challenge: {ex}")
+                    else:
+                        p.abs_ids.update(found.values())
+                        prompt, variants = challenges.expand(t['challenge'], prompt, lines, script, found)
+                        reply = challenges.victory(t['challenge'], found)
+                        try:
+                            for text in (reply['lines'] + [reply['prompt']]) if reply else []:
+                                z(text)
+                        except UnicodeEncodeError:
+                            p.errors.append(f"dialogue[{i}]: victory text contains characters outside Windows-1252")
+                        script = None
+                        try:
+                            for v in variants:
+                                for text in v['lines']:
+                                    z(text)
+                            z(prompt)
+                        except UnicodeEncodeError:
+                            p.errors.append(f"dialogue[{i}]: text contains characters outside Windows-1252")
+            entry = (kind, prompt, lines, script, self.plan_conditions(p, t, i))
             opts = {}
+            if variants:
+                opts['variants'] = variants
+            if reply:
+                opts['victory'] = reply
             if answers and len(answers) > 1:
                 opts.update(answers=answers, pick=t.get('pick', 'random'))
             if parent is not None:
@@ -951,15 +1000,24 @@ class NpcBuilder:
             except (ValueError, TypeError):
                 p.errors.append(f"{label}: param2 must be an integer (e.g. the stage for GetStageDone)")
                 continue
+            glob = None
+            if c.get('value_global'):
+                try:
+                    glob = self.resolver.lookup(c['value_global'], ['GLOB'])[0]
+                except ValueError as ex:
+                    p.errors.append(f"{label}: value_global: {ex}")
+                    continue
+                p.abs_ids.add(glob)
+            tail = (glob, bool(c.get('or'))) if glob or c.get('or') else ()
             if c.get('function') == 'GetIsSex':
-                out.append((func, -SEXES[c['sex']], op, float(c.get('value', 1)), run_on, param2))
+                out.append((func, -SEXES[c['sex']], op, float(c.get('value', 1)), run_on, param2) + tail)
                 continue
             if c.get('function') in NO_PARAM_FUNCTIONS:
-                out.append((func, 0, op, float(c.get('value', 1)), run_on, param2))
+                out.append((func, 0, op, float(c.get('value', 1)), run_on, param2) + tail)
                 continue
             if 'actor_value' in c:
                 # actor value index, not a form; a negative id is written through unchanged
-                out.append((func, -int(c['actor_value']), op, float(c.get('value', 1)), run_on, param2))
+                out.append((func, -int(c['actor_value']), op, float(c.get('value', 1)), run_on, param2) + tail)
                 continue
             try:
                 if c.get('function') in REFERENCE_FUNCTIONS:
@@ -971,14 +1029,14 @@ class NpcBuilder:
                 p.errors.append(f"{label}: {ex}")
                 continue
             p.abs_ids.add(fid)
-            out.append((func, fid, op, value, run_on, param2))
+            out.append((func, fid, op, value, run_on, param2) + tail)
         return out
 
     def plan_script(self, p, t, i):
         """(papyrus code, [(property name, absolute form id)]) run when the line ends, or None."""
         bad = [k for k in t if k not in ('kind', 'prompt', 'line', 'lines', 'give_items', 'code', 'properties',
                                          'conditions', 'show_while_following', 'answers', 'pick', 'child_of',
-                                         'blocking', 'goodbye', 'say_once', 'loop', 'ends_branch')]
+                                         'blocking', 'goodbye', 'say_once', 'loop', 'ends_branch', 'challenge')]
         if bad:
             p.errors.append(f"dialogue[{i}]: unknown keys {bad}")
         code, props = [], []
@@ -1679,6 +1737,9 @@ class NpcBuilder:
             opts = topic[5] if len(topic) > 5 else {}
             parent_idx = opts.get('child_of')
             answers = opts.get('answers') or [lines]
+            variants = opts.get('variants')
+            if variants:
+                answers = [v['lines'] for v in variants]
             sub_name, data = SUBTYPES[kind]
             dial = Record('DIAL', FormID(self.own(new_id())), 0)
             dial.add_subrecord('EDID', z(f"{qid}{kind.capitalize()}{n}"))
@@ -1707,8 +1768,8 @@ class NpcBuilder:
             plugin.add_record(dial)
             group = GroupRecord(7, dial.form_id.value)
             top.records.append(group)
-            def make_info(a_lines, flags):
-                if opts.get('goodbye'):
+            def make_info(a_lines, flags, more=(), goodbye=False):
+                if opts.get('goodbye') or goodbye:
                     flags |= INFO_GOODBYE
                 if opts.get('say_once'):
                     flags |= INFO_SAY_ONCE
@@ -1721,13 +1782,17 @@ class NpcBuilder:
                     rec.add_subrecord('NAM2', b'\x00')
                     rec.add_subrecord('NAM3', b'\x00')
                 rec.add_subrecord('CTDA', condition)
-                for func, fid, op, value, run_on, *rest in extra:
+                for func, fid, op, value, run_on, *rest in list(extra) + list(more):
                     param2 = rest[0] if rest else 0
-                    rec.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', op << 5, value, func,
+                    glob, or_flag = (rest[1], rest[2] if len(rest) > 2 else False) if len(rest) > 1 else (None, False)
+                    flags_byte = (op << 5) | (0x04 if glob else 0) | (0x01 if or_flag else 0)
+                    # a global comparison stores the global's form ID where the number would go
+                    value_bits = (self.lid(glob) if glob else struct.unpack('<I', struct.pack('<f', value))[0])
+                    rec.add_subrecord('CTDA', struct.pack('<B3xIH2xIIIIi', flags_byte, value_bits, func,
                                                           self.lid(fid), param2, run_on,
                                                           PLAYER_REF if run_on == 2 else 0, -1))
                 return rec
-            def attach_script(rec):
+            def attach_script(rec, script=script):
                 code, props = script
                 sname = script_name(plugin.file_path.name, 'TIF', rec.form_id.value & 0xFFFFFF)
                 pex = compile_script(sname, tif_source(sname, code, [(n_, 'Form') for n_, _ in props]),
@@ -1735,18 +1800,46 @@ class NpcBuilder:
                 rec.add_subrecord('VMAD', info_vmad(sname, [(n_, self.lid(f)) for n_, f in props]))
                 rec.subrecords.insert(0, rec.subrecords.pop())
                 made.append({'type': 'script', 'editor_id': sname, 'object_id': str(pex)})
-            info = make_info(answers[0], answer_flags(opts.get('pick'), 0, len(answers)))
-            if script:
-                attach_script(info)
-            group.records.append(info)
-            self.register(plugin, info)
-            for a_i, a_lines in enumerate(answers[1:], 1):
-                more = make_info(a_lines, answer_flags(opts.get('pick'), a_i, len(answers)))
-                if script:
-                    attach_script(more)
-                group.records.append(more)
-                self.register(plugin, more)
+            if variants:
+                infos = []
+                for v in variants:
+                    rec = make_info(v['lines'], 0, v.get('extra', ()), v.get('goodbye', False))
+                    if v.get('script'):
+                        attach_script(rec, v['script'])
+                    infos.append(rec)
+            else:
+                infos = []
+                for a_i, a_lines in enumerate(answers):
+                    rec = make_info(a_lines, answer_flags(opts.get('pick'), a_i, len(answers)))
+                    if script:
+                        attach_script(rec)
+                    infos.append(rec)
+            info = infos[0]
+            for rec in infos:
+                group.records.append(rec)
+                self.register(plugin, rec)
             made_topics[n - existing - 1] = (dial, info, branch_fid, group)
+            reply = opts.get('victory')
+            if reply and 'victory' not in made_topics:
+                made_topics['victory'] = True  # one reply per NPC however many fights it offers
+                # a won brawl ends in a vanilla topic that only answers the NPCs it names, so answer for this one
+                src = self.m.records[reply['dial']]
+                vdial = plugin._form_id_index.get(plugin.remap_formid(src.form_id.value, src.plugin))
+                if vdial is None:
+                    vdial = self.override(plugin, src)
+                    plugin.add_record(vdial)
+                vgroup = next((g for g in top.records if isinstance(g, GroupRecord) and g.group_type == 7
+                               and g.label == vdial.form_id.value), None)
+                if vgroup is None:
+                    vgroup = GroupRecord(7, vdial.form_id.value)
+                    top.records.append(vgroup)
+                vinfo = make_info(reply['lines'], 0, (), True)
+                vinfo.add_subrecord('RNAM', z(reply['prompt']))
+                attach_script(vinfo, reply['script'])
+                vgroup.records.append(vinfo)
+                self.register(plugin, vinfo)
+                made.append({'type': 'INFO (victory reply)', 'editor_id': None,
+                             'object_id': f"{vinfo.form_id.value & 0xFFFFFF:06X}"})
             if parent_idx is not None:
                 children.setdefault(parent_idx, []).append(n - existing - 1)
                 pinfo = made_topics[parent_idx][1]

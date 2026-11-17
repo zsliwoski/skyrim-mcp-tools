@@ -56,20 +56,45 @@ When an NPC explains their predicament or goal (the quest pitch), don't offer on
 - **Rival:** a skeptic who will challenge him every step of the way.
 - **Wicked:** amoral, serves their own ends.
 
-Adapt the archetypes to the NPC and quest (a healer's plea might offer the Compassionate, the Pragmatist, the Mercenary). These names are for the author only: never put the archetype label in a player prompt or an NPC line. Write each prompt as the in-world words that character would say ("Those people sound like they need you."), so the choice reads as roleplay, not a menu of labels.
+Adapt the archetypes to the NPC and quest (a healer's plea might offer the Compassionate, the Pragmatist, the Mercenary and the Skeptic). These names are for the author only: never put the archetype label in a player prompt or an NPC line. Write each prompt as the in-world words that character would say, so the choice reads as roleplay, not a menu of labels.
 
-The stance replies are not the accept button. They are things the player can say on the way to a decision, and the pitch offers only them. The NPC answers each one, and only after that answer are the plain accept ("Very well. I'll fetch the tome.") and refuse ("I can't help you right now.") prompts offered; accepting alone starts the quest. After a refusal, the revisit line ("Have you given it more thought?") offers accept and refuse straight away, without the stance replies. Keep prompts short and nest them as sibling choices (see the nesting rules above). Where later lines allow it, let the NPC refer back to the stance chosen.
+Lean into each archetype. Prompts that are all polite variations of "tell me more" make the stances feel the same, so give each its own attitude, stakes and edge, and have the NPC's answer react to it. For the healer's plea:
+- **Compassionate:** "If people are dying, tell me where to find this tome." (urgent, moved by the suffering; she is relieved)
+- **Pragmatist:** "What does Belethor want for it, and what if he says no?" (practical, about logistics and risk; she gives straight answers)
+- **Mercenary:** "I don't run errands for blessings, so name a price." (open about wanting pay; she haggles or bristles)
+- **Skeptic:** "A fever that conveniently needs a stranger's help sounds like a scheme." (suspicious, challenges her; she is stung and has to justify herself)
+
+The stance replies are not the accept button. They are things the player can say on the way to a decision, and the pitch offers only them. The NPC answers each one, and only after that answer are the plain accept ("I'll fetch the tome.") and refuse ("I can't help you right now.") prompts offered; accepting alone starts the quest. After a refusal, the revisit line ("Have you given it more thought?") offers accept and refuse straight away, without the stance replies. Player prompts should generally be one sentence: put any extra attitude in the NPC's reply, not in a second prompt sentence. Nest them as sibling choices (see the nesting rules above). Where later lines allow it, let the NPC refer back to the stance chosen.
 
 The player must also be able to refuse, and a refusal is not final. Refusing sets a hidden quest stage (5, no journal entry). The pitch topic is then replaced by a second one, conditioned on that stage, with a short, to-the-point prompt ("About that tome...") instead of repeating the opener. Its NPC line is the revisit ("Have you given it more thought?"), followed straight away by accept and refuse. This is the standard flow for a fetch-quest errand and `add_fetch_quest` builds it (see `skyrim-quest-authoring`); for other quest shapes build it the same way with `GetStage` conditions and a `SetStage` on refusal.
 
 Rules the tools follow:
+
 - Re-using `quest_editor_id` adds topics to the existing quest instead of making a new one.
 - Scripts are compiled with the Creation Kit compiler (`SKYRIM_CK_DIR`, default the `Skyrim` Steam folder) into `Scripts` beside the plugin; `package_plugin` includes them.
 - Names, prompts and lines are inline text, so a localized plugin (STRINGS files) is refused.
 - Every topic is conditioned on that NPC only. There is no voice audio, so lines show as subtitles with no lip sync.
 - Item ids need an exact editor ID when a name is ambiguous. Use `search_forms("ALCH", "sweetroll")` first (sweet roll is `FoodSweetroll`, an `ALCH`).
 
+### Optional checks: speech, intimidation, brawl, gold
+Some NPCs may make the player earn what they want, based on personality. This is optional: most NPCs (and most quests) should have none, and a plain accept/refuse is right for a kind or neutral NPC. Reserve checks for characters whose nature calls for it: a proud merchant or guard captain (speech), a bully or hardened warrior (intimidation or a brawl), a greedy or mercenary type (gold). Offer one or two per NPC as extra prompts beside the normal ones, and never make a quest depend on a check the player cannot retry or buy past: a failed check returns to the menu and the player can try again (a failed intimidation can start a fight, which is the point).
+
+Add `"challenge"` to a player topic (in `create_npc`/`edit_npc` dialogue, or to the accepting reply of `add_fetch_quest`: `offer.challenge`, or `offer.accept.challenge` with roleplay options). The topic's own `lines`, `code` and `give_items` run on **success**; `challenge.failure.lines` is what the NPC says otherwise. The prompt gets the vanilla tag appended, so write it without one.
+- `{"type": "persuade", "difficulty": "hard", "failure": {...}}`: passes when the player's Speechcraft is at least the vanilla global (`very_easy`, `easy`, `average`, `hard`, `very_hard`; default average). `"luck": 10` adds a 10% chance a too-low skill still passes. Prompt shows `(Persuade)`. Success also credits Speechcraft XP through the vanilla favor script.
+- `{"type": "intimidate", "brawl_on_failure": true, "failure": {...}}`: passes on the engine's intimidation roll (`GetIntimidateSuccess`). With `brawl_on_failure` a failure ends the conversation and starts a brawl. Prompt shows `(Intimidate)`.
+- `{"type": "price", "amount": 50, "failure": {...}}` (also `gold`, `bribe`): needs that much gold, takes it and gives it to the NPC. Prompt shows `(50 gold)`.
+- `{"type": "brawl", "amount": 100, "failure": {...}, "victory": {"prompt": "...", "lines": ["..."]}}`: a fist fight, optionally for a stake. With `amount` the player must carry the gold (taken when the fight starts) and `failure` says "come back when you have it"; without it no `failure` is needed. Prompt shows `(Brawl - 100 gold)`. The lines are the NPC's last words before it starts and the conversation ends. When the player wins, the NPC yields and the player gets one reply to pick (`victory.prompt`, one sentence) that the NPC answers with `victory.lines`; a stake is paid back doubled. It is built automatically (defaults are generic, so write your own in the NPC's voice). It must exist: vanilla's victory reply (`DGIntimidateVictoryYes`) only answers the NPCs it names, and without it the fight never finishes and the NPC stays down and silent. A fight only starts for an NPC the vanilla brawl quest accepts: its voice type must be in the `VoicesBrawling` list (most commoner, nord, soldier, brute and orc voices are; drunk is not), and it must not be an Invulnerable or Unaggressive clone source (Mikael is both, so cloning him gives an NPC who never fights back). Clone a plain Aggressive NPC (Uthgerd, Torvar) and set `voice_type` if needed.
+
+How vanilla builds them (see `DA07` Jorgen, `Favor017` Uthgerd, `DA11`): a normal topic whose prompt carries the tag, with two INFOs tried in order. The first is conditioned on the check, and its TIF script calls the vanilla `DialogueFavorGeneric` (`FavorDialogueScript`): `Persuade`, `Intimidate` or `Brawl(akSpeaker, None)`. The second has no check and is the failure line. Brawl for gold (Uthgerd) is the first INFO requiring `GetItemCount(Gold001) >= 100`, removing the gold and starting the fight. To build anything else by hand use the dialogue `conditions` extras: `"value_global": "SpeechHard"` (compare to a global, with `GetActorValue` and `"actor_value": 17` for Speechcraft), `"or": true`, and the no-parameter `GetIntimidateSuccess`, `GetBribeSuccess`, `IsIntimidatedbyPlayer`, `IsBribedbyPlayer`.
+
+The intimidation roll is the engine's: it weighs the player's Speechcraft and level against the NPC's level and confidence (a Brave, low-level-range clone fails often for a low-Speech player; the exact formula is not in our data). Persuade is separate and compares Speechcraft to the difficulty global.
+
+Building several challenge NPCs into one plugin: pass `fields` (not `spec`) to `create_npc`; the first call uses `overwrite=true`, later NPCs and `add_fetch_quest` pass `target_plugin` so they append. Delete stale `TIF__<Plugin>_*.pex` from the output `Scripts` folder before a full rebuild, and run `package_plugin` (it regenerates the SEQ that `validate_plugin` flags as stale). `packages: []` clears a clone's inherited AI packages (Torvar's Companions routine). Untested in game unless noted: victory replies and the Gorm-style failed-intimidation brawl.
+
+Not every NPC needs these, and the same NPC should not offer all four. Hireling prices (`skyrim-followers`) are the same gold gate. Failures should be in character and short, and one sentence for the prompt still applies.
+
 ## Engine-spoken lines (barks)
+
 Besides menu topics, the engine speaks lines by itself when something happens. Vanilla picks them by voice type, so a custom voice type (e.g. `MyVoice`) hears none of them unless the NPC has its own. Add them with a `kind` and no `prompt`; each entry may use `answers` for several random variants. Lines are subtitles only.
 
 | Option | Kinds | When |
@@ -161,4 +186,4 @@ Check in this order, using the in-game console:
 6. Script not firing: confirm the `.pex` is in the mod's `Scripts` folder and the script name matches the INFO `VMAD`.
 
 ## Known gaps
-No per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. State these rather than guessing when asked to do them.
+No per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. A challenge (see "Optional checks") only gates a topic; it does not drive quest stages beyond the accepting reply of `add_fetch_quest`. State these rather than guessing when asked to do them.

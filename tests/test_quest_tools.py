@@ -20,6 +20,7 @@ class TestQuests:
         assert found["REFR"] == ["TestWoodRef"]
         # the offer, reminder, turn-in and done topics join the NPC's existing dialogue quest
         assert sum(1 for d in found["DIAL"]) == 5
+        assert len(found["QUST"]) == len(set(found["QUST"]))
 
         pkg = server.package_plugin("TestMod.esp")
         assert "error" not in pkg, pkg
@@ -40,6 +41,16 @@ class TestQuests:
         alias_flags = [int.from_bytes(bytes(s.data), "little") for s in quest.subrecords if s.signature == "FNAM"
                        and len(s.data) == 4]
         assert 6 in alias_flags
+
+    def test_fetch_quest_accept_can_be_gated_by_a_check(self, npc_plugin):
+        spec = dict(FETCH_SPEC, offer={"prompt": "Anything I can help with?", "lines": ["Fetch my wood."],
+                                       "challenge": {"type": "persuade", "difficulty": "easy",
+                                                     "failure": {"lines": ["Not from you."]}}})
+        res = server.add_fetch_quest("TestSven", spec, "TestMod.esp")
+        assert "error" not in res, res
+        assert sum(1 for d in sigs(npc_plugin)["DIAL"]) == 5  # the gate adds responses, not topics
+        bad = dict(FETCH_SPEC, offer={"prompt": "Help?", "lines": ["Yes."], "challenge": {"type": "persuade"}})
+        assert "error" in server.add_fetch_quest("TestSven", bad, "TestMod.esp")
 
     def test_fetch_quest_rejects_bad_spec(self, npc_plugin):
         assert "error" in server.add_fetch_quest("TestSven", {"quest_editor_id": "Q"}, "TestMod.esp")

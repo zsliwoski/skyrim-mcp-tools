@@ -59,6 +59,53 @@ class TestCreateNpc:
         assert len([r for r in plugin.records if r.signature == "DIAL"]) == 2
         assert flags[:3] == [2, 2, 2] and flags[3:] == [4, 4, 0]
 
+    def test_challenges_make_gated_responses_under_one_topic(self, sandbox):
+        import struct
+        res = server.create_npc({
+            "plugin_name": "Chal.esp", "editor_id": "ChalSven", "name": "Chal Sven", "clone_from": "Sven",
+            "dialogue": [
+                {"kind": "topic", "prompt": "Tell me the secret.", "lines": ["Fine."],
+                 "challenge": {"type": "persuade", "difficulty": "hard", "luck": 10,
+                               "failure": {"lines": ["Not a chance."]}}},
+                {"kind": "topic", "prompt": "Talk or bleed.", "lines": ["Alright!"],
+                 "challenge": {"type": "intimidate", "brawl_on_failure": True,
+                               "failure": {"lines": ["Let's go, then."]}}},
+                {"kind": "topic", "prompt": "Fight me.", "lines": ["Come on."],
+                 "challenge": {"type": "brawl", "amount": 100, "failure": {"lines": ["Bring gold."]}}},
+                {"kind": "topic", "prompt": "Take this.", "lines": ["Thanks."],
+                 "challenge": {"type": "gold", "amount": 50, "failure": {"lines": ["Too little."]}}}]})
+        assert "error" not in res, res
+        plugin = Plugin.load(str(sandbox / "Chal.esp"))
+        dials = [r for r in plugin.records if r.signature == "DIAL"]
+        # the vanilla victory topic is overridden (no prompt of its own) to carry this NPC's reply
+        victory = [r for r in dials if r.editor_id == "DGIntimidateVictoryYes"]
+        assert len(victory) == 1
+        prompts = [bytes(r.get_subrecord("FULL").data) for r in dials if r not in victory]
+        assert prompts == [b"Tell me the secret. (Persuade)\x00", b"Talk or bleed. (Intimidate)\x00",
+                           b"Fight me. (Brawl - 100 gold)\x00", b"Take this. (50 gold)\x00"]
+        infos = [r for r in plugin.records if r.signature == "INFO"]
+        assert len(infos) == 9
+        won = infos[4]
+        assert bytes(won.get_subrecord("RNAM").data).startswith(b"That was a good fight")
+        assert struct.unpack("<HH", bytes(won.get_subrecord("ENAM").data[:4]))[0] & 1
+        speech = [bytes(s.data) for s in infos[0].subrecords if s.signature == "CTDA"]
+        # the Speechcraft check compares to a global (flag 0x04) and is ORed with the luck roll (0x01)
+        assert speech[1][0] == 0x65 and struct.unpack_from("<H", speech[1], 8)[0] == 14
+        assert len([s for s in infos[0].subrecords if s.signature == "CTDA"]) == 3
+        assert len([s for s in infos[1].subrecords if s.signature == "CTDA"]) == 1  # failure: only the speaker
+        # a failed intimidation ends the conversation
+        assert struct.unpack("<HH", bytes(infos[3].get_subrecord("ENAM").data[:4]))[0] & 1
+        assert len([s for s in infos[5].subrecords if s.signature == "CTDA"]) == 2  # stake: speaker + gold
+
+    def test_challenge_validation(self, sandbox):
+        base = {"plugin_name": "Bad.esp", "editor_id": "X", "name": "X", "clone_from": "Sven"}
+        for challenge in ({"type": "persuade"},
+                          {"type": "persuade", "difficulty": "easy", "failure": {"lines": ["no"]}, "bogus": 1},
+                          {"type": "price", "failure": {"lines": ["no"]}},
+                          {"type": "persuade", "difficulty": "godly", "failure": {"lines": ["no"]}}):
+            entry = {"kind": "topic", "prompt": "a", "lines": ["x"], "challenge": challenge}
+            assert "error" in server.create_npc({**base, "dialogue": [entry]}), challenge
+
     def test_answers_validation(self, sandbox):
         base = {"plugin_name": "Bad.esp", "editor_id": "X", "name": "X", "clone_from": "Sven"}
         for entry in ({"prompt": "a", "lines": ["x"], "answers": [["y"]]},
