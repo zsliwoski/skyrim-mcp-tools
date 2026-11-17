@@ -95,7 +95,8 @@ FIELDS = {
                 'it behind a check (use sparingly; most NPCs have none): {"type": "persuade" (+ "difficulty": '
                 'very_easy|easy|average|hard|very_hard, "luck": percent chance a too-low skill still passes), '
                 '"intimidate" (+ "brawl_on_failure": true), "brawl" (+ optional "amount" gold stake, and '
-                '"victory": {"prompt", "lines"} for the reply after the player wins) or "price" '
+                '"victory": {"prompt", "lines"} for the reply after the player wins), "skill" (+ "skill": '
+                'any skill name e.g. Lockpicking, "rank": level 1-100, optional "luck") or "price" '
                 '(+ "amount" gold, also "gold"/"bribe"), "failure": {"lines": [...], "goodbye": bool}}. The topic\'s '
                 'own lines/code/give_items run on success; the prompt gets a vanilla-style tag such as (Persuade) or '
                 '(100 gold); the player can try again later.',

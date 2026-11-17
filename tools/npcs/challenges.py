@@ -11,9 +11,21 @@ SPEECHCRAFT = 17  # actor value index
 
 DIFFICULTIES = {'very_easy': 'SpeechVeryEasy', 'easy': 'SpeechEasy', 'average': 'SpeechAverage',
                 'hard': 'SpeechHard', 'very_hard': 'SpeechVeryHard'}
-TYPES = ('persuade', 'intimidate', 'brawl', 'price')
+TYPES = ('persuade', 'intimidate', 'brawl', 'price', 'skill')
 ALIASES = {'gold': 'price', 'bribe': 'price', 'speech': 'persuade'}
-KEYS = ('type', 'difficulty', 'luck', 'amount', 'failure', 'brawl_on_failure', 'victory')
+KEYS = ('type', 'difficulty', 'luck', 'amount', 'failure', 'brawl_on_failure', 'victory', 'skill', 'rank')
+# actor value index = 6 + position in the NPC skill order (Speech is 17, matching SPEECHCRAFT)
+SKILLS = ('OneHanded', 'TwoHanded', 'Archery', 'Block', 'Smithing', 'HeavyArmor', 'LightArmor', 'Pickpocket',
+          'Lockpicking', 'Sneak', 'Alchemy', 'Speech', 'Alteration', 'Conjuration', 'Destruction', 'Illusion',
+          'Restoration', 'Enchanting')
+SKILL_ALIASES = {'marksman': 'Archery', 'speechcraft': 'Speech'}
+
+
+def skill_of(challenge):
+    """Canonical skill name for a skill challenge, or None."""
+    name = str(challenge.get('skill', '')).replace(' ', '').lower()
+    name = SKILL_ALIASES.get(name, name).lower()
+    return next((s for s in SKILLS if s.lower() == name), None)
 VICTORY_PROMPT = "That was a good fight."
 VICTORY_LINES = ["You fight well. Well enough that I'll call it even."]
 VICTORY_PAID = ["Fair and square. Here, your winnings."]
@@ -45,6 +57,12 @@ def check(challenge, label):
         errors.append(f"{label}: brawl amount must be a positive whole number of gold")
     if kind == 'persuade' and challenge.get('difficulty', 'average') not in DIFFICULTIES:
         errors.append(f"{label}: difficulty must be one of {list(DIFFICULTIES)}")
+    if kind == 'skill':
+        rank = challenge.get('rank')
+        if skill_of(challenge) is None:
+            errors.append(f"{label}: skill must be one of {list(SKILLS)}")
+        if not (isinstance(rank, int) and not isinstance(rank, bool) and 1 <= rank <= 100):
+            errors.append(f"{label}: skill needs rank, the skill level (1-100) the player must have")
     luck = challenge.get('luck', 0)
     if not (isinstance(luck, int) and not isinstance(luck, bool) and 0 <= luck <= 100):
         errors.append(f"{label}: luck must be a whole percent 0-100 (chance a too-low skill still succeeds)")
@@ -56,7 +74,7 @@ def check(challenge, label):
                 'lines' in victory and not (isinstance(victory['lines'], list) and victory['lines'])):
             errors.append(f"{label}: victory is {{prompt, lines}}, what the player says and the NPC answers "
                           "once the fight is won")
-    needs_failure = kind in ('persuade', 'intimidate', 'price') or (kind == 'brawl' and amount)
+    needs_failure = kind in ('persuade', 'intimidate', 'price', 'skill') or (kind == 'brawl' and amount)
     failure = challenge.get('failure')
     if needs_failure and not (isinstance(failure, dict) and failure.get('lines')):
         errors.append(f"{label}: failure needs lines, what the NPC says when the check fails")
@@ -88,6 +106,12 @@ def expand(challenge, prompt, lines, script, f):
         if luck:
             extra.append((GET_RANDOM_PERCENT, 0, LE, float(luck), SUBJECT))
         run, props = [f"{FAVOR}.Persuade(akSpeaker)"], props + [('FavorQuest', f['favor'])]
+    elif kind == 'skill':
+        skill, rank = skill_of(challenge), int(challenge['rank'])
+        tag, luck = f"({skill} {rank})", int(challenge.get('luck', 0))
+        extra.append((GET_ACTOR_VALUE, -(6 + SKILLS.index(skill)), GE, float(rank), TARGET, 0, None, bool(luck)))
+        if luck:
+            extra.append((GET_RANDOM_PERCENT, 0, LE, float(luck), SUBJECT))
     elif kind == 'intimidate':
         tag = '(Intimidate)'
         extra.append((GET_INTIMIDATE_SUCCESS, 0, EQ, 1.0, SUBJECT))

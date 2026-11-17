@@ -136,6 +136,7 @@ Studying an existing controller: `find_dependents(plugin, records=[<faction>])` 
 - The hiring Papyrus is `SetFollower` from `DialogueFollowerScript`; read it with `get_script("DialogueFollowerScript")`.
 - Vanilla hirelings are also tracked by `HirelingQuest`; this approach skips the rehire tracking, so a dismissed NPC can be hired again at the same cost.
 - A cloned NPC keeps the original's packages and factions; the follower alias package should take priority, but check `get_npc` if he does not follow.
+- With the vanilla-style `follower` setup, do not also add our speech options (persuade, intimidate, brawl, gold `challenge`) to the NPC's topics: the hire price is already the gold gate. See "Optional checks" in `skyrim-dialogue`.
 - Wait and Follow are gated on the `WaitingForPlayer` actor value (index `0x5F`, set by `FollowerWait`/`FollowerFollow`): Wait shows at 0, Follow at 1. Use `{"function": "GetActorValue", "actor_value": 95, "op": "==", "value": 0}`. Untested in game.
 - The vanilla `DialogueFollower` Wait/Follow/Dismiss/Trade topics are conditioned on specific NPC IDs or the housecarl faction, so they do not appear for a custom hireling; ours are the only ones.
 - If the quest does not react, use the console: `sqv DialogueFollower` and `getav WaitingForPlayer` on the NPC.

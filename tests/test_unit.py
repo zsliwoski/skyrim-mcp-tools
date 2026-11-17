@@ -159,6 +159,24 @@ class TestFetchQuestSpec:
         assert "FetchQuest.SetStage(20)" in src
 
 
+class TestSkillChallenge:
+    def test_skill_check_gates_success_on_the_actor_value(self):
+        from tools.npcs import challenges
+        spec = {"type": "skill", "skill": "lockpicking", "rank": 50, "luck": 10, "failure": {"lines": ["No."]}}
+        assert challenges.check(spec, "c") == []
+        prompt, (win, fail) = challenges.expand(spec, "Watch this.", ["Ok."], None, {})
+        assert prompt == "Watch this. (Lockpicking 50)" and fail['extra'] == []
+        skill_cond, luck_cond = win['extra']
+        assert skill_cond[:4] == (challenges.GET_ACTOR_VALUE, -14, challenges.GE, 50.0) and skill_cond[-1] is True
+        assert luck_cond[0] == challenges.GET_RANDOM_PERCENT
+
+    def test_skill_check_rejects_bad_skill_and_rank(self):
+        from tools.npcs import challenges
+        bad = challenges.check({"type": "skill", "skill": "Cooking", "rank": 150, "failure": {"lines": ["x"]}}, "c")
+        assert len(bad) == 2
+        assert challenges.skill_of({"skill": "Speechcraft"}) == "Speech"
+
+
 class TestFollowerEntries:
     def test_ambient_and_travel_entries_use_known_subtypes(self):
         from tools.npcs import npc_builder as nb
