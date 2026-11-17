@@ -107,6 +107,26 @@ class TestQuests:
                  if s.signature == "NAM1"]
         assert b"He is my alibi.\x00" in texts and b"She is my alibi.\x00" in texts
 
+    def test_staged_fight_builds_fight_script_and_after_scene(self, npc_plugin):
+        from esplib import Plugin
+        spec = {"scene_editor_id": "TestBrawl", "quest_editor_id": "TestBrawlQuest", "speaker": "TestSven",
+                "partner": "Lydia", "prompt": "Settle it with your fists.", "trigger_line": "You're on.",
+                "lines": [{"who": "partner", "text": "Fair fight."}, {"who": "speaker", "text": "Aye."}]}
+        assert "error" in server.staged_fight("TestMod.esp", {**spec, "timeout": 0})
+        res = server.staged_fight("TestMod.esp", spec)
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        assert any(r.editor_id == "TestBrawl" for r in plug.records)
+        info = next(r for r in plug.records if r.signature == "INFO" and any(
+            s.signature == "NAM1" and b"You're on." in bytes(s.data) for s in r.subrecords))
+        assert sum(1 for s in info.subrecords if s.signature == "CTDA") == 1  # no idle-bark guards on a player topic
+        pkg = server.package_plugin("TestMod.esp")
+        with zipfile.ZipFile(pkg["zip"]) as z:
+            assert any("TIF__TestMod_" in n for n in z.namelist())
+        res = server.staged_fight("TestMod.esp", {k: v for k, v in spec.items() if k != "lines"} | {
+            "scene_editor_id": "TestBrawl2"})
+        assert "error" not in res, res
+
     def test_follower_controls_build_factions_packages_and_topics(self, npc_plugin):
         from esplib import Plugin
         res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven"})

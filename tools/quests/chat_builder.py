@@ -22,14 +22,23 @@ SEX_PARAM = {'male': 0, 'female': 1}
 KEYS = {'scene_editor_id', 'quest_editor_id', 'speaker', 'partner', 'lines', 'trigger_lines', 'trigger_line',
         'dialogue_quest_editor_id', 'partner_reference', 'distance', 'hired', 'random_percent', 'once',
         'conditions'}
+FIGHT_KEYS = {'prompt', 'timeout', 'stop_on_player', 'unarmed'}
+FIGHT_TIMEOUT = 90
 
 
-def check_spec(spec):
-    """Error strings for a chat spec; empty when it is usable."""
+def check_spec(spec, fight=False):
+    """Error strings for a chat spec (or a staged-fight spec); empty when it is usable."""
     errors = []
     if not isinstance(spec, dict):
         return ["spec must be an object"]
-    errors += [f"unknown key {k!r}" for k in spec if k not in KEYS]
+    errors += [f"unknown key {k!r}" for k in spec if k not in KEYS | (FIGHT_KEYS if fight else set())]
+    if fight:
+        for k in ('timeout',):
+            v = spec.get(k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 1):
+                errors.append(f"{k} must be a number of seconds, at least 1")
+        if spec.get('prompt') is not None and not (isinstance(spec['prompt'], str) and spec['prompt'].strip()):
+            errors.append("prompt must be a non-empty string")
     for k in ('scene_editor_id', 'quest_editor_id'):
         if not re.fullmatch(r'[A-Za-z0-9_]+', str(spec.get(k, ''))):
             errors.append(f"{k} is required (letters, digits and underscores)")
@@ -37,7 +46,9 @@ def check_spec(spec):
         if not spec.get(k):
             errors.append(f"{k} is required (an NPC editor ID, name or form ID)")
     lines = spec.get('lines')
-    if not (isinstance(lines, list) and lines):
+    if fight and lines is None:
+        lines = []
+    if not (isinstance(lines, list) and (lines or fight)):
         errors.append("lines must be a non-empty list of {who: 'speaker'|'partner', text}")
     else:
         for i, ln in enumerate(lines):
@@ -160,15 +171,135 @@ def scene_record(fid, editor_id, quest_fid, aliases, actions):
     return rec
 
 
-def add_npc_chat(b, spec, target_plugin):
+def scene_lines(b, plugin, new_id, quest_fid, sid, lines, local, alias):
+    """Scene-line DIALs and INFOs for lines [{who, text|player_text}]; returns the actions for scene_record."""
+    top = next((g for g in plugin.groups if g.group_type == 0 and g.label == 'DIAL'), None)
+    if top is None:
+        top = GroupRecord(0, 'DIAL')
+        plugin.groups.append(top)
+    actions = []
+    for i, ln in enumerate(lines, 1):
+        who = ln['who']
+        other = PARTNER if who == SPEAKER else SPEAKER
+        dial = Record('DIAL', FormID(b.own(new_id())), 0)
+        dial.add_subrecord('EDID', z(f"{sid}Line{i}"))
+        dial.add_subrecord('PNAM', struct.pack('<f', 50.0))
+        dial.add_subrecord('QNAM', fid_bytes(quest_fid))
+        dial.add_subrecord('DATA', SCENE_TOPIC_DATA)
+        dial.add_subrecord('SNAM', b'SCEN')
+        dial.add_subrecord('TIFC', struct.pack('<I', 1))
+        plugin.add_record(dial)
+        group = GroupRecord(7, dial.form_id.value)
+        top.records.append(group)
+        variants = ([(None, ln['text'])] if ln.get('text') else
+                    [(sex, ln['player_text'][sex]) for sex in ('male', 'female')])
+        for sex, text in variants:
+            info = Record('INFO', FormID(b.own(new_id())), 0)
+            info.add_subrecord('ENAM', struct.pack('<HH', 0, 0))
+            info.add_subrecord('CNAM', b'\x00')
+            info.add_subrecord('TRDT', struct.pack('<II4xB3xIB3x', 0, 50, 1, 0, 1))
+            info.add_subrecord('NAM1', z(text))
+            info.add_subrecord('NAM2', b'\x00')
+            info.add_subrecord('NAM3', b'\x00')
+            info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_ID, local[who], 0, 0, 0, -1))
+            if sex:
+                info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_SEX, SEX_PARAM[sex], 0, 1, 0,
+                                                       -1))
+            group.records.append(info)
+            b.register(plugin, info)
+        actions.append((alias[who], dial.form_id.value, alias[other]))
+    return actions
+
+
+def unarm_code(var, tag):
+    """Papyrus that moves an actor's weapons into a hidden empty chest and unequips hand spells, and the matching restore.
+
+    Unequipping is not enough: the combat AI re-equips any weapon still carried, so the weapons leave the inventory."""
+    off = (f"Weapon {tag}r = {var}.GetEquippedWeapon(false)\nWeapon {tag}l = {var}.GetEquippedWeapon(true)\n"
+           f"Spell {tag}sr = {var}.GetEquippedSpell(1)\nSpell {tag}sl = {var}.GetEquippedSpell(0)\n"
+           f"If {tag}sr\n{var}.UnequipSpell({tag}sr, 1)\nEndIf\n"
+           f"If {tag}sl\n{var}.UnequipSpell({tag}sl, 0)\nEndIf\n"
+           f"ObjectReference {tag}b = {var}.PlaceAtMe(Game.GetForm(0xF8478), 1, false, true)\nForm[] {tag}f = new Form[32]\nint[] {tag}c = new int[32]\nint {tag}n = 0\n"
+           f"int {tag}i = {var}.GetNumItems()\nWhile {tag}i > 0\n{tag}i -= 1\n"
+           f"Form {tag}x = {var}.GetNthForm({tag}i)\n"
+           f"If {tag}x as Weapon && {tag}n < 32\n{tag}f[{tag}n] = {tag}x\n{tag}c[{tag}n] = {var}.GetItemCount({tag}x)\n"
+           f"{tag}n += 1\nEndIf\nEndWhile\n"
+           f"{tag}i = 0\nWhile {tag}i < {tag}n\n{var}.RemoveItem({tag}f[{tag}i], {tag}c[{tag}i], true, {tag}b)\n"
+           f"{tag}i += 1\nEndWhile")
+    # RemoveAllItems also returns any weapon the guard below took off the actor mid-fight
+    on = (f"{tag}b.RemoveAllItems({var}, false, true)\n{tag}b.Delete()\n"
+          f"If {tag}r\n{var}.EquipItem({tag}r, false, true)\nEndIf\n"
+          f"If {tag}l\n{var}.EquipItem({tag}l, false, true)\nEndIf\n"
+          f"If {tag}sr\n{var}.EquipSpell({tag}sr, 1)\nEndIf\n"
+          f"If {tag}sl\n{var}.EquipSpell({tag}sl, 0)\nEndIf")
+    # the AI can still pick up and draw a loose weapon, so the fight loop strips anything drawn
+    guard = (f"Weapon {tag}g = {var}.GetEquippedWeapon(false)\n"
+             f"If {tag}g\n{var}.RemoveItem({tag}g, {var}.GetItemCount({tag}g), true, {tag}b)\nEndIf\n"
+             f"{tag}g = {var}.GetEquippedWeapon(true)\n"
+             f"If {tag}g\n{var}.RemoveItem({tag}g, {var}.GetItemCount({tag}g), true, {tag}b)\nEndIf")
+    return off, on, guard
+
+def fight_code(a, b_alias, timeout, scene_alias_prop, stop_on_player=True, unarmed=True):
+    """Papyrus for a non-lethal fight between two quest aliases, ending in the after-fight scene (if any)."""
+    (off_a, on_a, g_a), (off_b, on_b, g_b) = unarm_code('fa', 'wa'), unarm_code('fb', 'wb')
+    arm_off = f"{off_a}\n{off_b}" if unarmed else ''
+    arm_on = f"{on_a}\n{on_b}" if unarmed else ''
+    arm_guard = f"{g_a}\n{g_b}" if unarmed else ''
+    code = f"""
+Quest fq = FightQuest as Quest
+Actor fa = (fq.GetAlias({a}) as ReferenceAlias).GetActorReference()
+Actor fb = (fq.GetAlias({b_alias}) as ReferenceAlias).GetActorReference()
+ActorBase ba = fa.GetActorBase()
+ActorBase bb = fb.GetActorBase()
+bool ea = ba.IsEssential()
+bool eb = bb.IsEssential()
+ba.SetEssential(true)
+bb.SetEssential(true)
+Actor pl = Game.GetPlayer()
+{arm_off}
+fa.StartCombat(fb)
+fb.StartCombat(fa)
+bool joined = false
+int waited = 0
+While waited < {timeout} && !fa.IsBleedingOut() && !fb.IsBleedingOut() && !joined
+Utility.Wait(0.5)
+waited += 1
+{arm_guard}
+{'joined = fa.GetCombatTarget() == pl || fb.GetCombatTarget() == pl' if stop_on_player else ''}
+EndWhile
+fa.StopCombat()
+fb.StopCombat()
+fa.StopCombatAlarm()
+fb.StopCombatAlarm()
+int getUp = 0
+While (fa.IsBleedingOut() || fb.IsBleedingOut()) && getUp < 120
+Utility.Wait(0.5)
+getUp += 1
+EndWhile
+fa.ResetHealthAndLimbs()
+fb.ResetHealthAndLimbs()
+ba.SetEssential(ea)
+bb.SetEssential(eb)
+{arm_on}"""
+    if scene_alias_prop:
+        code += f"\nIf !joined\nScene after = {scene_alias_prop} as Scene\nafter.Start()\nEndIf"
+    return code
+
+
+def add_npc_chat(b, spec, target_plugin, fight=False):
     """Add a scene in which a follower and another NPC talk, started by a trigger line the follower says.
 
     Creates (or extends) the chat quest with an alias per NPC, one scene-line topic per line, the SCEN, and a
     trigger idle line on the follower's dialogue quest whose fragment starts the scene.
+
+    With fight=True the trigger first runs a non-lethal brawl between the two NPCs and then plays the (optional)
+    lines as the after-fight scene.
     """
-    errors = check_spec(spec)
+    errors = check_spec(spec, fight)
     if errors:
         raise ValueError("; ".join(errors))
+    if fight:
+        spec = {'hired': False, 'random_percent': 0 if spec.get('prompt') else 10, **spec}
     path = resolve_target_path(target_plugin, b.output_dir, b.data_dir)
     target = Target(b.m, b.names, path, create=False)
     plugin = target.plugin
@@ -192,7 +323,8 @@ def add_npc_chat(b, spec, target_plugin):
             npcs[role] = (fid, re.sub(r'\W', '', str(ident)) or role, False)
     if npcs[SPEAKER][0] == npcs[PARTNER][0]:
         raise ValueError("speaker and partner must be different NPCs")
-    cond_spec = {'conditions': trigger_conditions(spec)}
+    cond_spec = {'conditions': list(spec.get('conditions') or []) if fight and spec.get('prompt')
+                 else trigger_conditions(spec)}
     conds = b.plan_conditions(p, cond_spec, 0)
     if p.errors:
         raise ValueError("; ".join(p.errors))
@@ -224,44 +356,12 @@ def add_npc_chat(b, spec, target_plugin):
     alias = {role: ensure_alias(quest, local[role], npcs[role][1]) for role in (SPEAKER, PARTNER)}
     quest_fid = quest.form_id.value
 
-    top = next((g for g in plugin.groups if g.group_type == 0 and g.label == 'DIAL'), None)
-    if top is None:
-        top = GroupRecord(0, 'DIAL')
-        plugin.groups.append(top)
-    actions = []
-    for i, ln in enumerate(spec['lines'], 1):
-        who = ln['who']
-        other = PARTNER if who == SPEAKER else SPEAKER
-        dial = Record('DIAL', FormID(b.own(new_id())), 0)
-        dial.add_subrecord('EDID', z(f"{sid}Line{i}"))
-        dial.add_subrecord('PNAM', struct.pack('<f', 50.0))
-        dial.add_subrecord('QNAM', fid_bytes(quest_fid))
-        dial.add_subrecord('DATA', SCENE_TOPIC_DATA)
-        dial.add_subrecord('SNAM', b'SCEN')
-        dial.add_subrecord('TIFC', struct.pack('<I', 1))
-        plugin.add_record(dial)
-        group = GroupRecord(7, dial.form_id.value)
-        top.records.append(group)
-        variants = ([(None, ln['text'])] if ln.get('text') else
-                    [(sex, ln['player_text'][sex]) for sex in ('male', 'female')])
-        for sex, text in variants:
-            info = Record('INFO', FormID(b.own(new_id())), 0)
-            info.add_subrecord('ENAM', struct.pack('<HH', 0, 0))
-            info.add_subrecord('CNAM', b'\x00')
-            info.add_subrecord('TRDT', struct.pack('<II4xB3xIB3x', 0, 50, 1, 0, 1))
-            info.add_subrecord('NAM1', z(text))
-            info.add_subrecord('NAM2', b'\x00')
-            info.add_subrecord('NAM3', b'\x00')
-            info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_ID, local[who], 0, 0, 0, -1))
-            if sex:
-                info.add_subrecord('CTDA', struct.pack('<B3xfH2xIIIIi', 0, 1.0, GET_IS_SEX, SEX_PARAM[sex], 0, 1, 0,
-                                                       -1))
-            group.records.append(info)
-            b.register(plugin, info)
-        actions.append((alias[who], dial.form_id.value, alias[other]))
-    scene = scene_record(b.own(new_id()), sid, quest_fid, sorted(set(alias.values())), actions)
-    plugin.add_record(scene)
-    made.append(b.describe(scene))
+    actions = scene_lines(b, plugin, new_id, quest_fid, sid, spec.get('lines') or [], local, alias)
+    scene = None
+    if actions:
+        scene = scene_record(b.own(new_id()), sid, quest_fid, sorted(set(alias.values())), actions)
+        plugin.add_record(scene)
+        made.append(b.describe(scene))
 
     trig = spec.get('trigger_lines') or [spec['trigger_line']]
     if isinstance(trig, str):
@@ -271,8 +371,16 @@ def add_npc_chat(b, spec, target_plugin):
         opts.update(answers=[[t] for t in trig], pick='random')
     if spec.get('once', True):
         opts['say_once'] = True
-    code = "Scene chat = ChatScene as Scene\nchat.Start()"
-    topic = ('idle', None, [trig[0]], (code, [('ChatScene', -scene.form_id.value)]), conds, opts)
+    if fight:
+        code = fight_code(alias[SPEAKER], alias[PARTNER],         spec.get('timeout', FIGHT_TIMEOUT) * 2,
+                                  'AfterScene' if scene else None, spec.get('stop_on_player', True), spec.get('unarmed', True))
+        props = [('FightQuest', -quest_fid)] + ([('AfterScene', -scene.form_id.value)] if scene else [])
+        opts['goodbye'] = True
+    else:
+        code = "Scene chat = ChatScene as Scene\nchat.Start()"
+        props = [('ChatScene', -scene.form_id.value)]
+    prompt = spec.get('prompt') if fight else None
+    topic = ('topic' if prompt else 'idle', prompt, [trig[0]], (code, props), conds, opts)
     p.topics = [topic]
     dq = spec.get('dialogue_quest_editor_id') or f"{npcs[SPEAKER][1]}DialogueQuest"
     b.make_dialogue(plugin, {'editor_id': npcs[SPEAKER][1], 'quest_editor_id': dq}, p, new_id, made,

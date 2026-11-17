@@ -37,6 +37,8 @@ edit_npc("MyNpc", {"quest_editor_id": "MyNpcDialogueQuest", "dialogue": [
   "MyPlugin.esp")
 ```
 
+Cloning and factions: vanilla hangs many topics on factions (e.g. Sven can be asked about the Bards College, and so can every member of that faction). A clone inherits its source's factions, so it can also inherit unwanted topics. After creating a clone, check `get_npc` and drop or replace factions you don't want (`factions` replaces the whole list), and talk to the NPC in game (or `get_npc_dialogue`) to catch stray topics.
+
 ### Keep the top-level menu short: nest related prompts
 Do not put every prompt in the main conversation list. When three or more prompts belong together, make one parent topic and hang the rest off it with `child_of`, so the player sees one entry instead of many:
 - **Quest info:** one entry per quest, e.g. "About the sweet roll thief...", with the questions under it ("Where do I find this giant?"). Give the parent and its children the same stage conditions. Quest actions (ask for the job, turn it in, "any update") can stay top-level.

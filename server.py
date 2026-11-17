@@ -13,7 +13,8 @@ mcp = MCPServer("skyrim-mcp-tools")
 # Tools that read-modify-write plugin files. Concurrent calls (e.g. several clone_record calls in one
 # batch) would load the same file, each add a record and overwrite each other, so they run one at a time.
 WRITE_TOOLS = {
-    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'add_follower_controls',
+    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'staged_fight',
+    'add_follower_controls',
     'create_faction', 'create_package', 'write_npc_plugin', 'create_npc',
     'edit_npc', 'add_fetch_quest', 'add_kill_quest', 'add_plant_quest', 'add_radiant_quest', 'add_quest',
     'clone_record', 'clone_records', 'create_cell', 'make_reference_persistent', 'snapshot_plugin',
@@ -409,6 +410,31 @@ def add_npc_chat(target_plugin: str, spec: dict, plugins: list[str] | None = Non
     try:
         from tools.quests.chat_builder import add_npc_chat as run
         res = run(npc_builder(_with_target(plugins, target_plugin)), spec, target_plugin)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def staged_fight(target_plugin: str, spec: dict, plugins: list[str] | None = None) -> dict:
+    """Stage a non-lethal fist fight between two NPCs, then play an optional scene of them talking afterwards.
+
+    spec is as for add_npc_chat (scene_editor_id, quest_editor_id, speaker, partner, trigger_line(s), once,
+    conditions, dialogue_quest_editor_id) plus: prompt (a player topic on the speaker that starts the fight; leave
+    out for an idle line instead, which defaults to hired=false), timeout (seconds before the fight is
+    called off, default 90), lines: [{who, text | player_text}] (the after-fight scene; optional).
+    The script makes both fighters essential for the fight, drops their weapons, has them fight each other until one
+    enters bleedout (or the timeout), then stops combat, resets health and limbs, restores essential flags and
+    weapons, and starts the after-fight scene. unarmed (default true) strips weapons and hand spells from both and
+    blocks re-equipping for the fight, then restores them; false lets them fight with what they carry. By default (stop_on_player true) the fight is also called off, and
+    the after-fight scene skipped, as soon as either fighter targets the player; set it false to let them carry on.
+    Not verified in game.
+    Run validate_plugin, package_plugin and install_plugin afterwards.
+    """
+    try:
+        from tools.quests.chat_builder import add_npc_chat as run
+        res = run(npc_builder(_with_target(plugins, target_plugin)), spec, target_plugin, fight=True)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:

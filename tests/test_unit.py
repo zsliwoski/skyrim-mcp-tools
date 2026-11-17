@@ -13,7 +13,7 @@ from tools.core.quest_model import u32
 ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_TOOLS = {
-    "add_fetch_quest", "add_npc_chat", "add_follower_controls", "create_faction", "create_package",
+    "add_fetch_quest", "add_npc_chat", "staged_fight", "add_follower_controls", "create_faction", "create_package",
     "add_npc_dialogue", "add_quest_alias", "add_quest_stage_script", "create_npc",
     "create_npc_draft", "create_record", "describe_npc_fields", "edit_npc", "edit_npc_face", "edit_record",
     "get_npc", "get_npc_dialogue", "get_npc_draft", "get_npc_face", "get_quest", "get_quest_structure",
