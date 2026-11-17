@@ -1733,8 +1733,16 @@ class NpcBuilder:
         # and are offered after the parent's response instead of in the top-level menu
         made_topics = {}
         children, looping, enders = {}, set(), set()
-        for n, topic in enumerate(p.topics, existing + 1):
+        used_ids = {(r.editor_id or '').lower() for r in plugin.records}
+        number = existing
+        for idx, topic in enumerate(p.topics):
             kind, prompt, lines, script, extra = topic[:5]
+            # numbers are never reused, or removing a topic and adding another would duplicate an editor ID
+            number += 1
+            while {f"{qid}{kind.capitalize()}{number}".lower(), f"{qid}Branch{number}".lower()} & used_ids:
+                number += 1
+            n = number
+            used_ids |= {f"{qid}{kind.capitalize()}{n}".lower(), f"{qid}Branch{n}".lower()}
             opts = topic[5] if len(topic) > 5 else {}
             parent_idx = opts.get('child_of')
             answers = opts.get('answers') or [lines]
@@ -1819,7 +1827,7 @@ class NpcBuilder:
             for rec in infos:
                 group.records.append(rec)
                 self.register(plugin, rec)
-            made_topics[n - existing - 1] = (dial, info, branch_fid, group)
+            made_topics[idx] = (dial, info, branch_fid, group)
             reply = opts.get('victory')
             if reply and 'victory' not in made_topics:
                 made_topics['victory'] = True  # one reply per NPC however many fights it offers
@@ -1842,7 +1850,7 @@ class NpcBuilder:
                 made.append({'type': 'INFO (victory reply)', 'editor_id': None,
                              'object_id': f"{vinfo.form_id.value & 0xFFFFFF:06X}"})
             if parent_idx is not None:
-                children.setdefault(parent_idx, []).append(n - existing - 1)
+                children.setdefault(parent_idx, []).append(idx)
                 pinfo = made_topics[parent_idx][1]
                 pos = next(i for i, s in enumerate(pinfo.subrecords) if s.signature == 'CNAM') + 1
                 pinfo.add_subrecord('TCLT', fid_bytes(dial.form_id.value))
@@ -1854,9 +1862,9 @@ class NpcBuilder:
                 einfo.add_subrecord('TCLT', fid_bytes(dial.form_id.value))
                 einfo.subrecords.insert(pos, einfo.subrecords.pop())
             if opts.get('loop'):
-                looping.add(n - existing - 1)
+                looping.add(idx)
             if opts.get('ends_branch'):
-                enders.add(n - existing - 1)
+                enders.add(idx)
             made.extend([self.describe(dial), {'type': 'INFO', 'editor_id': None,
                                                'object_id': f"{info.form_id.value & 0xFFFFFF:06X}"}])
         # a looping parent: every child reply offers the other children again (so the player can ask several

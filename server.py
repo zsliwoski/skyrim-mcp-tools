@@ -417,24 +417,29 @@ def add_npc_chat(target_plugin: str, spec: dict, plugins: list[str] | None = Non
 
 
 @mcp.tool()
-def staged_fight(target_plugin: str, spec: dict, plugins: list[str] | None = None) -> dict:
+def staged_fight(target_plugin: str, spec: dict, plugins: list[str] | None = None,
+                 replace: str | None = None) -> dict:
     """Stage a non-lethal fist fight between two NPCs, then play an optional scene of them talking afterwards.
 
     spec is as for add_npc_chat (scene_editor_id, quest_editor_id, speaker, partner, trigger_line(s), once,
     conditions, dialogue_quest_editor_id) plus: prompt (a player topic on the speaker that starts the fight; leave
     out for an idle line instead, which defaults to hired=false), timeout (seconds before the fight is
-    called off, default 90), lines: [{who, text | player_text}] (the after-fight scene; optional).
+    called off, default 90), bleedout (seconds the loser stays down before they may get up, default 5), lines: [{who, text | player_text}] (the after-fight scene; optional).
     The script makes both fighters essential for the fight, drops their weapons, has them fight each other until one
     enters bleedout (or the timeout), then stops combat, resets health and limbs, restores essential flags and
     weapons, and starts the after-fight scene. unarmed (default true) strips weapons and hand spells from both and
     blocks re-equipping for the fight, then restores them; false lets them fight with what they carry. By default (stop_on_player true) the fight is also called off, and
     the after-fight scene skipped, as soon as either fighter targets the player; set it false to let them carry on.
-    Not verified in game.
-    Run validate_plugin, package_plugin and install_plugin afterwards.
+    replace: editor ID of an earlier scene (or trigger topic) to remove first with remove_chat, so a fight is rebuilt
+    with the current script in one call.
+    Run validate_plugin, package_plugin and install_plugin afterwards (or deploy_plugin for all three).
     """
     try:
-        from tools.quests.chat_builder import add_npc_chat as run
+        from tools.quests.chat_builder import add_npc_chat as run, remove_chat
+        removed = remove_chat(_out_path(target_plugin), replace, DATA_DIR) if replace else None
         res = run(npc_builder(_with_target(plugins, target_plugin)), spec, target_plugin, fight=True)
+        if removed:
+            res['replaced'] = removed
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:
@@ -1407,19 +1412,21 @@ def restore_snapshot(plugin: str, snapshot: str = "latest") -> dict:
 
 
 @mcp.tool()
-def install_plugin(plugin: str | list[str], dry_run: bool = False) -> dict:
+def install_plugin(plugin: str | list[str], dry_run: bool = False, prune: bool = True) -> dict:
     """Copy an output plugin, its scripts, FaceGen files and a regenerated SEQ file into the Skyrim Data folder.
 
     Reports each file as new/changed/same. dry_run only reports. Use this instead of Vortex for fast
     testing; it avoids a stale Data copy or SEQ file (the usual reason a new quest does not load).
     Pass a list of plugins to install several at once; the result is keyed by plugin, and one failing
-    plugin does not stop the others.
+    plugin does not stop the others. prune (default true) deletes installed TIF/QF fragment scripts of this
+    plugin that the build no longer produces. If Skyrim is running and has the plugin locked, the error says so.
+    deploy_plugin does validate, package and install in one call.
     """
     from tools.records.maintenance import install
 
     def one(name):
         try:
-            return install(_out_path(name), DATA_DIR, dry_run)
+            return install(_out_path(name), DATA_DIR, dry_run, prune)
         except (ValueError, FileNotFoundError) as e:
             return {"error": str(e)}
 
@@ -1929,6 +1936,31 @@ def remove_records(plugin: str, records: list[str]) -> dict:
     test items. Reports other records that still point at them. A snapshot is taken first."""
     from tools.records.record_tools import remove_records as run
     return _guarded(lambda: run(_out_path(plugin), records), "pre_remove_records", plugin)
+
+
+@mcp.tool()
+def remove_chat(plugin: str, scene: str) -> dict:
+    """Remove a chat or staged fight as one unit: the SCEN (scene editor ID), its line topics, the trigger topic that
+    starts it with its branch, and the compiled fragment scripts (output and installed). Pass a trigger topic's editor
+    ID instead to remove just that topic (a fight with no after-fight scene). A snapshot is taken first."""
+    from tools.quests.chat_builder import remove_chat as run
+    return _guarded(lambda: run(_out_path(plugin), scene, DATA_DIR), "pre_remove_chat", plugin)
+
+
+@mcp.tool()
+def reload_tools() -> dict:
+    """Developer aid: reload the tools.* Python modules in this running server so edits to them take effect without a
+    restart. Changes to server.py itself (tool names, signatures, docstrings) still need a restart."""
+    import importlib, sys
+    names = [n for n in list(sys.modules) if n == 'tools' or n.startswith('tools.')]
+    failed = {}
+    for n in names:
+        try:
+            importlib.reload(sys.modules[n])
+        except Exception as e:  # noqa: BLE001
+            failed[n] = str(e)
+    _invalidate()
+    return {'reloaded': len(names) - len(failed), 'failed': failed}
 
 
 @mcp.tool()

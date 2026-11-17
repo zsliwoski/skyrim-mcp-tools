@@ -66,8 +66,19 @@ def digest(p):
     return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
-def install(path, data_dir, dry_run=False):
-    """Copy the plugin and its loose files into the Data folder (regenerating SEQ) and report what changed."""
+def stale_fragments(path, data_dir, keep):
+    """Installed fragment scripts (TIF__<Plugin>_<id>.pex etc.) in Data/Scripts that the plugin no longer ships."""
+    stem = re.sub(r"[^A-Za-z0-9]", "", Path(path).stem)[:16]
+    pat = re.compile(rf"[A-Za-z]+__{re.escape(stem)}_[0-9A-Fa-f]{{6}}\.pex", re.I)
+    folder = Path(data_dir) / 'Scripts'
+    return [f for f in (folder.iterdir() if folder.is_dir() else []) if pat.fullmatch(f.name) and f.name.lower() not in keep]
+
+
+def install(path, data_dir, dry_run=False, prune=True):
+    """Copy the plugin and its loose files into the Data folder (regenerating SEQ) and report what changed.
+
+    prune also deletes installed fragment scripts for this plugin that the build no longer produces. A file Skyrim
+    has open (it is running) raises a ValueError saying so."""
     path, data_dir = Path(path), Path(data_dir)
     if not data_dir.is_dir():
         raise ValueError(f"Data folder not found: {data_dir}")
@@ -82,10 +93,22 @@ def install(path, data_dir, dry_run=False):
             state = 'same' if digest(f) == digest(dest) else 'changed'
         if state != 'same' and not dry_run:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(f, dest)
+            try:
+                shutil.copy2(f, dest)
+            except PermissionError as e:
+                raise ValueError(f"cannot write {dest}: the file is locked, which usually means Skyrim is running; close it and retry") from e
         rows.append({'file': rel.as_posix(), 'state': state})
+    keep = {Path(r['file']).name.lower() for r in rows}
+    pruned = []
+    for f in (stale_fragments(path, data_dir, keep) if prune else []):
+        if not dry_run:
+            try:
+                f.unlink()
+            except PermissionError as e:
+                raise ValueError(f"cannot delete {f}: the file is locked, which usually means Skyrim is running") from e
+        pruned.append(f.relative_to(data_dir).as_posix())
     changed = [r for r in rows if r['state'] != 'same']
-    return {'data_dir': str(data_dir), 'dry_run': dry_run, 'files': rows,
+    return {'data_dir': str(data_dir), 'dry_run': dry_run, 'files': rows, 'pruned_stale_scripts': pruned,
             'summary': f"{len(changed)} of {len(rows)} files {'would be ' if dry_run else ''}updated",
             'note': "Restart Skyrim; for a mod manager install, copy via the zip instead or the manager may overwrite these."}
 

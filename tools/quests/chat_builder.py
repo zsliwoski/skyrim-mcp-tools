@@ -1,6 +1,7 @@
 """NPC-to-NPC scene chats: a follower says a trigger line, then holds a short scripted conversation with another NPC."""
 import re
 import struct
+from pathlib import Path
 
 from esplib import Plugin
 from esplib.record import GroupRecord, Record
@@ -8,6 +9,8 @@ from esplib.utils import FormID
 
 from tools.core.plugin_edit import Target, hi, resolve_target_path
 from tools.npcs.npc_builder import GET_IS_ID, Plan, fid_bytes, z
+from tools.papyrus.papyrus_build import script_name
+from tools.records.maintenance import all_records
 
 SCENE_FLAGS = 0x10
 ACTOR_FLAGS = 0x2A
@@ -22,7 +25,8 @@ SEX_PARAM = {'male': 0, 'female': 1}
 KEYS = {'scene_editor_id', 'quest_editor_id', 'speaker', 'partner', 'lines', 'trigger_lines', 'trigger_line',
         'dialogue_quest_editor_id', 'partner_reference', 'distance', 'hired', 'random_percent', 'once',
         'conditions'}
-FIGHT_KEYS = {'prompt', 'timeout', 'stop_on_player', 'unarmed'}
+FIGHT_KEYS = {'prompt', 'timeout', 'stop_on_player', 'unarmed', 'bleedout'}
+FIGHT_BLEEDOUT = 5
 FIGHT_TIMEOUT = 90
 
 
@@ -239,7 +243,7 @@ def unarm_code(var, tag):
              f"If {tag}g\n{var}.RemoveItem({tag}g, {var}.GetItemCount({tag}g), true, {tag}b)\nEndIf")
     return off, on, guard
 
-def fight_code(a, b_alias, timeout, scene_alias_prop, stop_on_player=True, unarmed=True):
+def fight_code(a, b_alias, timeout, scene_alias_prop, stop_on_player=True, unarmed=True, bleedout=5):
     """Papyrus for a non-lethal fight between two quest aliases, ending in the after-fight scene (if any)."""
     (off_a, on_a, g_a), (off_b, on_b, g_b) = unarm_code('fa', 'wa'), unarm_code('fb', 'wb')
     arm_off = f"{off_a}\n{off_b}" if unarmed else ''
@@ -255,6 +259,8 @@ bool ea = ba.IsEssential()
 bool eb = bb.IsEssential()
 ba.SetEssential(true)
 bb.SetEssential(true)
+fa.SetNoBleedoutRecovery(true)
+fb.SetNoBleedoutRecovery(true)
 Actor pl = Game.GetPlayer()
 {arm_off}
 fa.StartCombat(fb)
@@ -271,6 +277,13 @@ fa.StopCombat()
 fb.StopCombat()
 fa.StopCombatAlarm()
 fb.StopCombatAlarm()
+int held = 0
+While (fa.IsBleedingOut() || fb.IsBleedingOut()) && held < {bleedout * 2}
+Utility.Wait(0.5)
+held += 1
+EndWhile
+fa.SetNoBleedoutRecovery(false)
+fb.SetNoBleedoutRecovery(false)
 int getUp = 0
 While (fa.IsBleedingOut() || fb.IsBleedingOut()) && getUp < 120
 Utility.Wait(0.5)
@@ -284,6 +297,67 @@ bb.SetEssential(eb)
     if scene_alias_prop:
         code += f"\nIf !joined\nScene after = {scene_alias_prop} as Scene\nafter.Start()\nEndIf"
     return code
+
+
+def remove_chat(path, scene, data_dir=None):
+    """Remove a chat or staged fight built by add_npc_chat/staged_fight as one unit.
+
+    scene is the SCEN editor ID: the scene, its line topics, the trigger topic whose fragment starts it (with its
+    branch) and the compiled fragment scripts all go. A trigger topic's editor ID also works, for a staged fight
+    with no after-fight scene, and removes just that topic. Installed copies of the scripts in data_dir/Scripts
+    are deleted too."""
+    path = Path(path)
+    plugin = Plugin.load(str(path))
+    own = len(plugin.header.masters)
+    q = scene.strip().lower()
+    recs = [r for r in all_records(plugin) if hi(r.form_id.value) == own]
+    hit = next((r for r in recs if (r.editor_id or '').lower() == q and r.signature in ('SCEN', 'DIAL')), None)
+    if hit is None:
+        raise ValueError(f"no scene or topic {scene!r} in {path.name}")
+    dials = {}
+    top = next((g for g in plugin.groups if g.group_type == 0 and g.label == 'DIAL'), None)
+    for g in (top.records if top else []):
+        if isinstance(g, GroupRecord) and g.group_type == 7:
+            dials[g.label] = g
+    by_id = {r.form_id.value: r for r in recs}
+    topics = []
+    if hit.signature == 'DIAL':
+        topics.append(hit)
+    else:
+        line_name = re.compile(rf"{re.escape(hit.editor_id)}Line\d+", re.I)
+        topics += [r for r in recs if r.signature == 'DIAL' and line_name.fullmatch(r.editor_id or '')]
+        scene_ref = struct.pack('<I', hit.form_id.value)
+        for fid, g in dials.items():
+            if fid in by_id and by_id[fid] not in topics and any(
+                    i.signature == 'INFO' and i.get_subrecord('VMAD') is not None
+                    and scene_ref in bytes(i.get_subrecord('VMAD').data) for i in g.records):
+                topics.append(by_id[fid])
+    doomed, scripts = [hit] if hit.signature == 'SCEN' else [], []
+    for d in topics:
+        for i in (dials[d.form_id.value].records if d.form_id.value in dials else []):
+            doomed.append(i)
+            if i.get_subrecord('VMAD') is not None:
+                scripts.append(script_name(path.name, 'TIF', i.form_id.value & 0xFFFFFF))
+        doomed.append(d)
+        doomed += [r for r in recs if r.signature == 'DLBR' and r.get_subrecord('SNAM') is not None
+                   and struct.unpack('<I', bytes(r.get_subrecord('SNAM').data))[0] == d.form_id.value]
+    removed = [f"{r.signature} {r.editor_id or ''} {r.form_id.value:08X}".replace('  ', ' ') for r in doomed]
+    for r in doomed:
+        plugin.remove_record(r)
+    gone = {r.form_id.value for r in doomed}
+    dangling = sorted({f"{r.editor_id or r.signature} {s.signature}" for r in all_records(plugin)
+                       for s in r.subrecords if len(s.data) == 4 and struct.unpack('<I', bytes(s.data))[0] in gone})
+    plugin.header.version = 1.7
+    plugin.modified = True
+    plugin.save(str(path))
+    deleted = []
+    for folder in [path.parent / 'Scripts'] + ([Path(data_dir) / 'Scripts'] if data_dir else []):
+        for name in scripts:
+            f = folder / f"{name}.pex"
+            if f.is_file():
+                f.unlink()
+                deleted.append(str(f))
+    return {'removed': removed, 'scripts_deleted': deleted, 'still_referenced_by': dangling}
 
 
 def add_npc_chat(b, spec, target_plugin, fight=False):
@@ -373,7 +447,8 @@ def add_npc_chat(b, spec, target_plugin, fight=False):
         opts['say_once'] = True
     if fight:
         code = fight_code(alias[SPEAKER], alias[PARTNER],         spec.get('timeout', FIGHT_TIMEOUT) * 2,
-                                  'AfterScene' if scene else None, spec.get('stop_on_player', True), spec.get('unarmed', True))
+                                  'AfterScene' if scene else None, spec.get('stop_on_player', True), spec.get('unarmed', True),
+                          spec.get('bleedout', FIGHT_BLEEDOUT))
         props = [('FightQuest', -quest_fid)] + ([('AfterScene', -scene.form_id.value)] if scene else [])
         opts['goodbye'] = True
     else:

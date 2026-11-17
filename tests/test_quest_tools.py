@@ -127,6 +127,25 @@ class TestQuests:
             "scene_editor_id": "TestBrawl2"})
         assert "error" not in res, res
 
+    def test_remove_chat_and_replace_rebuild_a_fight(self, npc_plugin):
+        from esplib import Plugin
+        spec = {"scene_editor_id": "TestBrawl", "quest_editor_id": "TestBrawlQuest", "speaker": "TestSven",
+                "partner": "Lydia", "prompt": "Settle it with your fists.", "trigger_line": "You're on.",
+                "lines": [{"who": "partner", "text": "Fair fight."}, {"who": "speaker", "text": "Aye."}]}
+        assert "error" not in server.staged_fight("TestMod.esp", spec)
+        res = server.staged_fight("TestMod.esp", spec, replace="TestBrawl")
+        assert "error" not in res and res["replaced"]["scripts_deleted"], res
+        plug = Plugin(str(npc_plugin))
+        ids = [r.editor_id for r in plug.records if r.editor_id]
+        assert len(ids) == len(set(ids)) and ids.count("TestBrawl") == 1
+        assert sum(1 for r in plug.records if r.signature == "SCEN" and r.editor_id == "TestBrawl") == 1
+        res = server.remove_chat("TestMod.esp", "TestBrawl")
+        assert "error" not in res and any(x.startswith("SCEN") for x in res["removed"]), res
+        plug = Plugin(str(npc_plugin))
+        assert not any(r.editor_id == "TestBrawl" or (r.editor_id or "").startswith("TestBrawlLine")
+                       for r in plug.records)
+        assert "error" in server.remove_chat("TestMod.esp", "TestBrawl")
+
     def test_follower_controls_build_factions_packages_and_topics(self, npc_plugin):
         from esplib import Plugin
         res = server.add_follower_controls("TestMod.esp", {"npc": "TestSven"})

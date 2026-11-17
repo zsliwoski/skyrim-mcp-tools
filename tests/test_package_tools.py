@@ -47,3 +47,16 @@ class TestMultiplePlugins:
         assert "error" not in res["One.esp"] and "error" in res["Missing.esp"]
         assert server.install_plugin([]) == {"error": "give at least one plugin"}
 
+
+    def test_install_prunes_stale_fragment_scripts(self, two, sandbox):
+        from tools.records.maintenance import install
+        data = sandbox / "FakeData"
+        scripts = data / "Scripts"
+        scripts.mkdir(parents=True)
+        stale, other = scripts / "TIF__One_000ABC.pex", scripts / "TIF__Two_000ABC.pex"
+        stale.write_bytes(b"x")
+        other.write_bytes(b"x")
+        assert install(sandbox / "One.esp", data, dry_run=True)["pruned_stale_scripts"] == ["Scripts/TIF__One_000ABC.pex"]
+        assert stale.exists()
+        assert install(sandbox / "One.esp", data)["pruned_stale_scripts"] == ["Scripts/TIF__One_000ABC.pex"]
+        assert not stale.exists() and other.exists()
