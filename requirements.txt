@@ -2,4 +2,5 @@ mcp>=2.0
 Pillow
 numpy
 pytest
+pytest-cov
 -e ./esplib

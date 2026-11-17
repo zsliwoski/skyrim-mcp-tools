@@ -317,6 +317,29 @@ The slow plugin-writing tests are split by area so you can run only what you cha
 live in `tests/conftest.py` and shared helpers in `tests/helpers.py`. The CI matrix groups the files the same
 way (core, spells, authoring); add new test files to a group in the workflow.
 
+### Coverage
+
+```powershell
+python -m pytest --cov=tools --cov-report=term-missing
+```
+
+The full suite (441 tests, about 5 minutes) covers **90%** of `tools/` (8,722 statements, 873 missed), and every
+module is at 75% or higher. Coverage was measured with the fixture master, so it needs no game files.
+
+| Area | Coverage |
+|---|---|
+| `tools/records` | 83–99% (`maintenance` 97%, `migrate` 99%, `edit_tools` 83%) |
+| `tools/quests` | 75–99% (`quest_edit` 75%, `quest_builder` 86%, builders 94–99%) |
+| `tools/npcs` | 86–100% (`npc_builder` 88%, `facegen` 86%) |
+| `tools/core` | 79–98% (`nif_tools` 79%, `plugin_edit` 80%, `quest_model` 98%) |
+| `tools/cells`, `tools/books` | 89–100% |
+| `tools/papyrus`, `tools/papyrus_api` | 78–100% (`pex_tools` 78%) |
+| `tools/knowledge`, `tools/lore`, `tools/dialogue` | 83–100% |
+
+Some tests stub the Papyrus compiler or reference persistence, and face-file paths that need real mesh assets
+are only partly covered, so the figures are a little generous for those areas. Numbers are a snapshot; rerun the
+command above for current ones.
+
 ## License
 
 Licensed under the [Mozilla Public License 2.0](LICENSE). The bundled [esplib/](esplib) is a modified
