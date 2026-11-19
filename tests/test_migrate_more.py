@@ -125,6 +125,20 @@ def test_move_records_into_existing_plugin_keeps_source(scripted, tmp_path):
     assert {r.editor_id for r in Plugin.load(str(target)).records} >= {"GCG_A", "GCG_B"}
 
 
+def test_move_records_remaps_colliding_ids(scripted, tmp_path):
+    path, _ = scripted
+    target = tmp_path / "Split.esp"
+    clash = Plugin.new_plugin(str(target), masters=["Skyrim.esm"], game="tes5")
+    clash.new_record("MISC", "Other_Item", form_id=0x801)
+    clash.save(str(target))
+    with pytest.raises(ValueError, match="remap_ids"):
+        migrate.move_records(path, target, records=["GCG_B"], remove_from_source=False)
+    res = migrate.move_records(path, target, records=["GCG_B"], remove_from_source=False, remap_ids=True)
+    assert res["remapped_ids"] == {"01000801": "01000802"}
+    moved = Plugin.load(str(target)).get_record_by_editor_id("GCG_B")
+    assert moved.form_id.value == 0x01000802
+
+
 def test_list_records_limit_and_name_filter(scripted):
     path, _ = scripted
     res = migrate.list_records(path, query="b", limit=1)

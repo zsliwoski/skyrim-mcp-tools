@@ -19,6 +19,8 @@ Vanilla NPCs speak without being asked. These lines are normal INFOs with a bark
 
 Vanilla gates many of these by voice type, so a custom voice type hears none unless the NPC carries its own lines. Whether bark text shows without audio depends on the General Subtitles setting (unverified).
 
+**Custom voice needs custom combat voice.** Any NPC given a custom voice record (a new voice type, or recorded/uploaded audio for their lines) must also get its own combat lines (`combat_lines: true`: attack, hit, block, flee, bleedout, death and the rest). Vanilla combat barks are gated by voice type, so a custom voice type plays no vanilla grunts and the NPC fights silently, or in the wrong voice, until it has its own combat set. Record or generate audio for those lines too, e.g. in `misc/voice_lines_gui.py`.
+
 Depth of reaction is organised into five immersion layers (base barks, player-aware, world-aware, social scenes, full coverage); see "Immersion layers" in `skyrim-dialogue`. Pick lines that suit where the NPC lives and what they would meet.
 
 ## Conditions by situation

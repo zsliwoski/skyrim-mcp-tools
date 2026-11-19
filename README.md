@@ -71,12 +71,13 @@ what a plan needs, and see the `skyrim-skse-scripting` skill.
 - `api_get`, `api_search`, `api_status` – look up Papyrus functions and events (see the API database section)
 - `detect_skse` – report whether SKSE is installed, whether the compiler can see its sources, and which output scripts use it
 - `search_forms`, `search_cells`, `search_references`, `get_cell_contents`, `get_record`
-- `get_npc_face`, `read_book`, `list_book_models`, `list_texts`, `list_conditions`
+- `get_npc_face`, `read_book`, `list_book_models`, `list_texts`, `audit_dialogue_length`, `list_conditions`
 
 ### NPC authoring
 - Draft workflow: `describe_npc_fields`, `create_npc_draft`, `update_npc_draft`, `add_npc_dialogue`,
   `get_npc_draft`, `validate_npc_draft`, `write_npc_plugin`
 - One-shot `create_npc`, and `edit_npc` for existing NPCs (including follower/hireling setup)
+- `create_talking_object`: an object (barrel, statue, door) the player can talk to, via a talking activator
 - Face shape and colour: `edit_npc_face`, `paint_npc_face`
 
 ### Quest authoring
@@ -179,7 +180,8 @@ embeddings).
 
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
-- `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`
+- `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`, and
+  `audit_voice` (per-NPC voice type, recorded lines and combat lines; `audit_plugin` includes its warnings)
 - `install_plugin` (copy to Data, with dry run), `deploy_plugin` (validate, then `mode` "package", "install" or
   "both" for zip plus install; can remove stale loose copies) and
   `package_plugin` (zip); `install_plugin` and `package_plugin` also take a list of plugins

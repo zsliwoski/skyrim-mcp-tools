@@ -73,15 +73,29 @@ def _with_target(plugins, target_plugin):
     return names
 
 
+def _stamp(path):
+    """(size, mtime) of a file, or None if it is missing."""
+    try:
+        s = Path(path).stat()
+    except OSError:
+        return None
+    return s.st_size, s.st_mtime_ns
+
+
 def get_model(plugins):
     """Cached Model for a plugin list (masters in the Data folder load automatically)."""
     from tools.core.quest_model import Model
 
     paths = tuple(_plugin_path(p) for p in (plugins or DEFAULT_PLUGINS))
+    # Key on size and mtime so edits made by the edit tools are seen without restarting the server.
+    stamp = tuple(_stamp(p) for p in paths)
     with _lock:
-        if paths not in _models:
-            _models[paths] = Model(paths, lambda _msg: None, resolve_refs=False)
-        return _models[paths]
+        key = (paths, stamp)
+        if key not in _models:
+            for old in [k for k in _models if k[0] == paths]:
+                del _models[old]
+            _models[key] = Model(paths, lambda _msg: None, resolve_refs=False, master_dirs=[DATA_DIR])
+        return _models[key]
 
 
 def npc_tools(plugins):
@@ -137,11 +151,11 @@ def get_npc(identifier: str, plugins: list[str] | None = None) -> dict:
 
 
 @mcp.tool()
-def get_npc_dialogue(identifier: str, limit: int = 500, include_generic: bool = True,
-                     plugins: list[str] | None = None) -> dict:
+def get_npc_dialogue(identifier: str | None = None, limit: int = 500, include_generic: bool = True,
+                     plugins: list[str] | None = None, npc: str | None = None) -> dict:
     """Get every dialogue line (INFO response) an NPC speaks.
 
-    identifier: NPC editor ID, display name, or form ID in hex. Lines are matched by the INFO
+    identifier (or its alias npc): NPC editor ID, display name, or form ID in hex. Lines are matched by the INFO
     speaker field, by GetIsID conditions on the NPC, and by GetIsAliasRef conditions for quest
     aliases that the NPC fills. Also returns lines from scene dialogue actions performed by those
     aliases ("scene") and, if include_generic, shared lines gated only by the NPC's voice type,
@@ -149,6 +163,9 @@ def get_npc_dialogue(identifier: str, limit: int = 500, include_generic: bool = 
     plugins: plugin file names or absolute paths in load order; defaults to Skyrim.esm.
     """
     from tools.dialogue.dialogue_tools import DialogueTools
+    identifier = identifier or npc
+    if not identifier:
+        return {"error": "give identifier (the NPC)"}
     m = get_model(plugins)
     npcs = npc_tools(plugins)
     hits = npcs.find(identifier)
@@ -641,6 +658,23 @@ def edit_npc(identifier: str, fields: dict, target_plugin: str, plugins: list[st
     """
     try:
         res = npc_builder(_with_target(plugins, target_plugin)).edit_npc(identifier, fields, target_plugin)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_talking_object(spec: dict, target_plugin: str, plugins: list[str] | None = None) -> dict:
+    """Add an inanimate object the player can talk to (a talking activator such as a barrel).
+
+    spec fields: editor_id, name, model (nif path, default Clutter\\Barrel02.nif), bounds ([x, y, z] half
+    extents, default [30, 30, 45]), voice_type (VTYP the lines are recorded under), placement (same as
+    create_npc) and dialogue (same as create_npc; topics, greetings, goodbyes). Dialogue is conditioned on
+    the object's base form. Added to target_plugin (created if missing; backed up to .bak).
+    """
+    try:
+        res = npc_builder(_with_target(plugins, target_plugin)).add_talker(spec, target_plugin)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:
@@ -1505,11 +1539,19 @@ def _guarded(fn, snapshot_label=None, plugin=None):
 
 
 @mcp.tool()
-def list_texts(plugin: str, query: str | None = None, limit: int = 50) -> list[dict] | dict:
+def list_texts(plugin: str, query: str | None = None, limit: int = 50, record: str | None = None,
+               type: str | None = None, sig: str | None = None, quest: str | None = None,
+               offset: int = 0) -> list[dict] | dict:
     """List the inline text (book text, dialogue lines, prompts, journal entries, names) of an output
-    plugin's own records, optionally filtered by a substring. Use the record and sig/index with edit_text."""
+    plugin's own records. Use the record and sig/index with edit_text, or topic with edit_texts.
+
+    query: substring of the text or editor ID. record: a single record (editor ID or hex ID). type: record
+    type such as INFO, DIAL, QUST. sig: subrecord such as NAM1 (lines) or FULL (names/prompts). quest: only the
+    dialogue of that quest; each response row also carries its topic and the player prompt. offset/limit page
+    through long results; a final row {truncated, total, next_offset} says there is more.
+    """
     from tools.records.edit_tools import list_texts as run
-    return _guarded(lambda: run(_out_path(plugin), query, limit))
+    return _guarded(lambda: run(_out_path(plugin), query, limit, record, type, sig, quest, offset))
 
 
 @mcp.tool()
@@ -1532,12 +1574,26 @@ def edit_text(plugin: str, record: str, sig: str, text: str | None = None, find:
 def edit_texts(plugin: str, items: list[dict], verbose: bool = False) -> list[dict] | dict:
     """Apply many text edits to one plugin with a single snapshot, load and save.
 
-    items: list of {record, sig, text | find + replace, index?} (same fields as edit_text). Everything is
-    validated first: if any item fails, nothing is written and the error names the item. Prefer this over
-    several edit_text calls when rewriting a set of books or lines.
+    items: list of {record | topic [+ response] | match, sig, text | find + replace, index?}. record is an
+    editor ID or hex ID. topic is a dialogue topic (editor ID or hex ID): sig FULL edits its prompt, sig NAM1
+    the response at position `response` (default 0), so no INFO form ID is needed. match is an exact existing
+    text: the edit applies to every record holding that same line (a line repeated across topics).
+    Everything is validated first: if any item fails, nothing is written and the error names the item. Prefer
+    this over several edit_text calls when rewriting a set of books or lines.
     """
     from tools.records.edit_tools import edit_texts as run
     return _guarded(lambda: run(_out_path(plugin), items, verbose), "pre_edit_texts", plugin)
+
+
+@mcp.tool()
+def audit_dialogue_length(plugin: str, max_prompt_sentences: int = 1, max_reply_sentences: int = 3,
+                          quest: str | None = None) -> dict:
+    """Find dialogue that breaks the length rule: player prompts longer than max_prompt_sentences (default 1)
+    and NPC replies (all lines of one response) longer than max_reply_sentences (default 3). Each issue gives
+    the topic, form ID, sentence count and text; fix them with edit_texts. quest limits it to one quest's
+    dialogue. Tags such as (Persuade) and ellipses ("About that salmon...") do not count as sentences."""
+    from tools.records.edit_tools import audit_dialogue_length as run
+    return _guarded(lambda: run(_out_path(plugin), max_prompt_sentences, max_reply_sentences, quest))
 
 
 @mcp.tool()
@@ -1823,7 +1879,31 @@ def audit_plugin(plugin: str) -> dict:
     """Design audit for fragile quests: objectives with no alias target (no marker), script properties
     pointing at non-persistent references (can be None at runtime), and unguarded script comparisons."""
     from tools.records.maintenance import audit_plugin as run
-    return _guarded(lambda: run(_out_path(plugin), DATA_DIR))
+    res = _guarded(lambda: run(_out_path(plugin), DATA_DIR))
+    if isinstance(res, dict) and "issues" in res:
+        voice = audit_voice(plugin)
+        res["issues"] += voice.get("issues", [])
+        res["ok"] = not res["issues"]
+    return res
+
+
+@mcp.tool()
+def audit_voice(plugin: str) -> dict:
+    """Voice coverage for each NPC a plugin defines: voice type, lines, recorded audio, and combat lines.
+
+    Per NPC: voice_type, custom_voice_type, lines (direct and scene), recorded (lines with audio under
+    Sound/Voice/<plugin>/), combat_lines and a category count. Issues are raised for an NPC with recorded lines or a
+    custom voice type but no combat lines (vanilla combat barks are gated by voice type, so it fights silently or
+    in the wrong voice; fix with edit_npc combat_lines: true), and for recordings in a voice folder that is not the
+    NPC's voice type (never played). audit_plugin includes these issues. See skyrim-dialogue-context.
+    """
+    from tools.dialogue.voice_audit import audit_voice as run
+    try:
+        path = _out_path(plugin)
+        m = get_model([*DEFAULT_PLUGINS, path])
+        return run(m, npc_tools([*DEFAULT_PLUGINS, path]), path, DATA_DIR)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()
@@ -1847,6 +1927,11 @@ def edit_npc_face(identifier: str, changes: dict, target_plugin: str, plugins: l
     -1..1, nose_type/eye_type/lip_type preset numbers, weight 0-100). Updates the NPC record in
     target_plugin and regenerates the baked FaceGen mesh next to it (if present; .bak saved). Hair
     and hairline are untouched. Human and elf races only. Run package_plugin afterwards.
+
+    An NPC that takes its looks from a Traits template cannot be edited (no own face, and its beard cannot be
+    replaced). Add "detach_template": "<donor NPC editor ID>" to changes to drop the template and start from the
+    donor's face, hair, tints and FaceGen files (same race and sex; pick one with the base look you want, e.g.
+    no beard), then apply the other changes, e.g. {"detach_template": "SomeBeardlessSoldier", "beard": "HumanBeard13"}.
     """
     try:
         res = npc_builder(plugins).edit_face(identifier, changes, target_plugin)
@@ -2004,10 +2089,12 @@ def rename_script(plugin: str, old: str, new: str) -> dict:
 def move_records(source_plugin: str, target_plugin: str, records: list[str] | None = None,
                  query: str | None = None, rename_prefix: dict | None = None,
                  script_renames: dict | None = None, remove_from_source: bool = True,
-                 allow_dangling: bool = False) -> dict:
+                 allow_dangling: bool = False, remap_ids: bool = False) -> dict:
     """Move own records (spells, items, effects...) from one output plugin to another, e.g. to split a mod.
 
-    Pick them with records and/or query (editor-ID substring). Form IDs are kept. target_plugin is created if
+    Pick them with records and/or query (editor-ID substring). Form IDs are kept, unless one is already used
+    in the target and remap_ids is true: that record then gets a free ID and references among the moved records
+    are rewritten (the result lists remapped_ids; update scripts that look records up by number). target_plugin is created if
     missing; both plugins must have the same master list. rename_prefix {"from": "GCG_", "to": "MT_"} changes
     editor IDs; script_renames {"OldScript": "NewScript"} renames attached scripts and recompiles them for
     the target (plugin file names inside the source are swapped too). remove_from_source deletes the originals
@@ -2024,7 +2111,7 @@ def move_records(source_plugin: str, target_plugin: str, records: list[str] | No
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
     return _guarded(lambda: run(src, dst, records, query, rename_prefix, script_renames, remove_from_source,
-                                allow_dangling), "pre_move_records", source_plugin)
+                                allow_dangling, remap_ids), "pre_move_records", source_plugin)
 
 
 @mcp.tool()

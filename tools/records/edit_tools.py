@@ -5,6 +5,7 @@ from pathlib import Path
 
 import esplib.defs.tes5  # noqa: F401
 from esplib import Plugin
+from esplib.record import GroupRecord
 from esplib.defs.condition_functions import get_condition_function
 from tools.records.maintenance import all_records
 from tools.papyrus.papyrus_build import compile_script
@@ -51,13 +52,79 @@ def find_record(plugin, ident):
     return hits[0]
 
 
-def list_texts(path, query=None, limit=50):
-    """Inline text subrecords of the plugin's own records, optionally filtered by a substring."""
+def dialogue_topics(plugin):
+    """[(DIAL, [INFO])] for the plugin's own topics, in file order (INFOs follow their topic)."""
+    topics, current = [], None
+
+    def walk(items):
+        nonlocal current
+        for it in items:
+            if isinstance(it, GroupRecord):
+                walk(it.records)
+            elif it.signature == 'DIAL':
+                current = (it, [])
+                topics.append(current)
+            elif it.signature == 'INFO' and current is not None:
+                current[1].append(it)
+    walk(plugin.records)
+    return [(d, i) for d, i in topics if is_own(plugin, d) or any(is_own(plugin, x) for x in i)]
+
+
+def _rid(rec):
+    return f"{rec.form_id.value & 0xFFFFFF:06X}"
+
+
+def _find_topic(plugin, topic):
+    """(DIAL, [INFO]) for a topic given by editor ID or hex object ID."""
+    q = str(topic).strip().lower()
+    for dial, infos in dialogue_topics(plugin):
+        if (dial.editor_id or '').lower() == q or _rid(dial).lower() == q.lstrip('0x').rjust(6, '0')[-6:]:
+            return dial, infos
+    raise ValueError(f"topic {topic!r} not found in {plugin.file_path.name}")
+
+
+def _quest_fid(plugin, quest):
+    rec = find_record(plugin, quest)
+    if rec.signature != 'QUST':
+        raise ValueError(f"{quest!r} is not a quest")
+    return rec.form_id.value
+
+
+def list_texts(path, query=None, limit=50, record=None, type=None, sig=None, quest=None, offset=0):
+    """Inline text subrecords of the plugin's own records.
+
+    query: substring of the text or editor ID. record: one record by editor ID or hex ID. type: record type
+    (INFO, DIAL, QUST...). sig: subrecord (NAM1, FULL...). quest: only the dialogue topics and responses of
+    this quest. Dialogue responses carry their topic and its prompt. offset/limit page the result; a final
+    {'truncated': True, 'next_offset': n} row says more is available."""
     plugin = Plugin.load(str(path))
     low = query.lower() if query else None
-    out = []
+    want_rec = str(record).lower().strip() if record else None
+    want_type = type.upper() if type else None
+    want_sig = sig.upper() if sig else None
+    owner = {}
+    if quest:
+        qf = _quest_fid(plugin, quest)
+        keep = set()
+        for dial, infos in dialogue_topics(plugin):
+            q = dial.get_subrecord('QNAM')
+            if q is not None and struct.unpack_from('<I', bytes(q.data))[0] == qf:
+                keep.add(id(dial))
+                keep.update(id(i) for i in infos)
+        scope = keep
+    else:
+        scope = None
+    for dial, infos in dialogue_topics(plugin):
+        for i in infos:
+            owner[id(i)] = dial
+    rows = []
     for r in all_records(plugin):
-        if not is_own(plugin, r):
+        if not is_own(plugin, r) or (scope is not None and id(r) not in scope):
+            continue
+        if want_type and r.signature != want_type:
+            continue
+        if want_rec and want_rec not in ((r.editor_id or '').lower(), _rid(r).lower(),
+                                         f"{r.form_id.value & 0xFFFFFF:08X}".lower()):
             continue
         counts = {}
         for s in r.subrecords:
@@ -65,23 +132,35 @@ def list_texts(path, query=None, limit=50):
                 continue
             i = counts[s.signature] = counts.get(s.signature, -1) + 1
             text = as_text(s.data)
+            if want_sig and s.signature != want_sig:
+                continue
             if text is None or (low and low not in text.lower() and low not in (r.editor_id or '').lower()):
                 continue
-            out.append({'record': r.editor_id or f"{r.form_id.value & 0xFFFFFF:06X}", 'type': r.signature,
-                        'form_id': f"{r.form_id.value & 0xFFFFFF:06X}", 'sig': s.signature, 'index': i,
-                        'text': text})
-            if len(out) >= limit:
-                return out
-    return out
+            row = {'record': r.editor_id or _rid(r), 'type': r.signature, 'form_id': _rid(r), 'sig': s.signature,
+                   'index': i, 'text': text}
+            dial = owner.get(id(r))
+            if dial is not None:
+                row['topic'] = dial.editor_id or _rid(dial)
+                prompt = dial.get_subrecord('FULL')
+                row['prompt'] = as_text(prompt.data) if prompt is not None else None
+            rows.append(row)
+    page = rows[offset:offset + limit]
+    if offset + limit < len(rows):
+        page.append({'truncated': True, 'total': len(rows), 'next_offset': offset + limit})
+    return page
 
 
 def _apply_text(plugin, record, sig, text, find, replace, index):
     """Edit one text subrecord of a loaded plugin; returns (old, new)."""
+    rec = find_record(plugin, record)
+    return _apply_to(rec, record, sig, text, find, replace, index)
+
+
+def _apply_to(rec, record, sig, text, find, replace, index):
     if (text is None) == (find is None):
         raise ValueError("give either text, or find and replace")
     if find is not None and replace is None:
         raise ValueError("find needs replace")
-    rec = find_record(plugin, record)
     subs = [s for s in rec.subrecords if s.signature == sig.upper()]
     if index >= len(subs):
         raise ValueError(f"{record} has {len(subs)} {sig} subrecord(s); index {index} is out of range")
@@ -97,6 +176,34 @@ def _apply_text(plugin, record, sig, text, find, replace, index):
     subs[index].data = encode(new)
     rec.modified = True
     return old, new
+
+
+def _item_targets(plugin, item):
+    """[(record, label)] an edit_texts item applies to.
+
+    record: one record. topic (+ response): a dialogue topic by editor ID or hex ID; sig FULL edits the
+    prompt, sig NAM1 the response at position `response` (default 0). match: every record holding a text
+    subrecord equal to this exact text (use it for the same line repeated in several topics)."""
+    if item.get('match') is not None:
+        sig = item['sig'].upper()
+        hits = []
+        for r in all_records(plugin):
+            if not is_own(plugin, r):
+                continue
+            if any(s.signature == sig and as_text(s.data) == item['match'] for s in r.subrecords):
+                hits.append((r, r.editor_id or _rid(r)))
+        if not hits:
+            raise ValueError(f"no {sig} text equals {item['match']!r}")
+        return hits
+    if item.get('topic') is not None:
+        dial, infos = _find_topic(plugin, item['topic'])
+        if item['sig'].upper() == 'FULL':
+            return [(dial, item['topic'])]
+        pos = item.get('response', 0)
+        if pos >= len(infos):
+            raise ValueError(f"topic {item['topic']} has {len(infos)} response(s); response {pos} is out of range")
+        return [(infos[pos], f"{item['topic']}[{pos}]")]
+    return [(find_record(plugin, item['record']), item['record'])]
 
 
 def _text_summary(record, sig, index, old, new, verbose):
@@ -117,19 +224,62 @@ def edit_text(path, record, sig, text=None, find=None, replace=None, index=0, ve
 
 
 def edit_texts(path, items, verbose=False):
-    """Apply several text edits with one load and one save. items: [{record, sig, text | find+replace, index?}].
-    All edits are validated before anything is written; on any error nothing changes."""
+    """Apply several text edits with one load and one save. items: [{record | topic+response | match, sig,
+    text | find+replace, index?}]. All edits are validated before anything is written; on any error nothing
+    changes. For `match` items, `text` (or find+replace) is applied to every identical line."""
     plugin = Plugin.load(str(path))
     results = []
     for i, item in enumerate(items):
+        label = item.get('record') or item.get('topic') or item.get('match')
         try:
-            old, new = _apply_text(plugin, item['record'], item['sig'], item.get('text'), item.get('find'),
-                                   item.get('replace'), item.get('index', 0))
+            if 'sig' not in item:
+                raise ValueError("sig is required")
+            for rec, name in _item_targets(plugin, item):
+                old, new = _apply_to(rec, name, item['sig'], item.get('text'), item.get('find'),
+                                     item.get('replace'), item.get('index', 0))
+                results.append(_text_summary(name, item['sig'], item.get('index', 0), old, new, verbose))
         except (KeyError, ValueError) as e:
-            raise ValueError(f"item {i} ({item.get('record')}): {e}") from e
-        results.append(_text_summary(item['record'], item['sig'], item.get('index', 0), old, new, verbose))
+            raise ValueError(f"item {i} ({label}): {e}") from e
     plugin.save(str(path))
     return results
+
+
+def count_sentences(text):
+    """Sentences in a line: runs ending in . ! ? or an ellipsis, ignoring tags like <Alias=Player> and (Persuade)."""
+    clean = re.sub(r'<[^>]*>|\s\([^)]*\)\s*$', ' ', text)
+    return len([p for p in re.split(r'(?<=[.!?…])["\')\]]*\s+', clean.strip()) if re.search(r'\w', p)])
+
+
+def audit_dialogue_length(path, max_prompt=1, max_reply=3, quest=None):
+    """Player prompts (DIAL FULL) longer than max_prompt sentences and NPC replies (all NAM1 lines of one INFO)
+    longer than max_reply sentences, from the plugin's own topics. Returns {'ok', 'checked', 'issues'}."""
+    plugin = Plugin.load(str(path))
+    qf = _quest_fid(plugin, quest) if quest else None
+    issues, checked = [], 0
+    for dial, infos in dialogue_topics(plugin):
+        if qf is not None:
+            q = dial.get_subrecord('QNAM')
+            if q is None or struct.unpack_from('<I', bytes(q.data))[0] != qf:
+                continue
+        name = dial.editor_id or _rid(dial)
+        full = dial.get_subrecord('FULL')
+        prompt = as_text(full.data) if full is not None else None
+        if prompt and is_own(plugin, dial):
+            checked += 1
+            n = count_sentences(prompt)
+            if n > max_prompt:
+                issues.append({'kind': 'prompt', 'topic': name, 'form_id': _rid(dial), 'sentences': n, 'text': prompt})
+        for pos, info in enumerate(infos):
+            lines = [as_text(s.data) or '' for s in info.subrecords if s.signature == 'NAM1']
+            if not any(lines) or not is_own(plugin, info):
+                continue
+            checked += 1
+            n = sum(count_sentences(x) for x in lines)
+            if n > max_reply:
+                issues.append({'kind': 'reply', 'topic': name, 'response': pos, 'form_id': _rid(info),
+                               'sentences': n, 'text': ' '.join(lines)})
+    return {'ok': not issues, 'checked': checked, 'max_prompt_sentences': max_prompt,
+            'max_reply_sentences': max_reply, 'issues': issues}
 
 
 def list_conditions(path, record):

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import esplib.defs.tes5  # noqa: F401
 from esplib import Plugin
+from esplib.utils import FormID
 from esplib.vmad import VmadData
 
 from tools.core.plugin_edit import hi, new_plugin, vmad_script_names
@@ -222,15 +223,49 @@ def rename_script(path, old, new):
     return {'script': str(pex), 'records_updated': records}
 
 
+def _remap_copies(copies, own, taken_ids):
+    """Give moved records whose form ID is already used in the target a free one, and rewrite every
+    four-byte reference to them inside the moved records. Returns {old form id: new form id}."""
+    used = {i & 0xFFFFFF for i in taken_ids} | {c.form_id.value & 0xFFFFFF for c in copies}
+    mapping, nxt = {}, max([0x800] + [u + 1 for u in used])
+    for c in copies:
+        if c.form_id.value in taken_ids:
+            mapping[c.form_id.value] = (own << 24) | nxt
+            nxt += 1
+    if not mapping:
+        return mapping, nxt
+    for c in copies:
+        for s in c.subrecords:
+            if s.signature in TEXT_SIGS or len(s.data) < 4:
+                continue
+            d = bytearray(s.data)
+            changed = False
+            for i in range(len(d) - 3):
+                if d[i + 3] == own:
+                    v = struct.unpack_from('<I', d, i)[0]
+                    if v in mapping:
+                        struct.pack_into('<I', d, i, mapping[v])
+                        changed = True
+            if changed:
+                s.data = bytes(d)
+                s.modified = True
+                c.modified = True
+        if c.form_id.value in mapping:
+            c.form_id = FormID(mapping[c.form_id.value])
+    return mapping, nxt
+
+
 def move_records(source_path, target_path, records=None, query=None, rename_prefix=None, script_renames=None,
-                 remove_from_source=True, allow_dangling=False):
+                 remove_from_source=True, allow_dangling=False, remap_ids=False):
     """Move own records from one output plugin to another (created if missing), keeping their form IDs.
 
     rename_prefix: {"from": "GCG_", "to": "MT_"} rewrites the start of each editor ID. script_renames:
     {"OldScript": "NewScript"} renames scripts the moved records attach; the source is recompiled for the
     target plugin's file name. remove_from_source deletes the originals and every reference placed in a cell
     (re-place items in the new plugin afterwards). The two plugins must have identical master lists. Fails if
-    a moved record points at an own record that stays behind, unless allow_dangling.
+    a moved record points at an own record that stays behind, unless allow_dangling. remap_ids: a moved record
+    whose form ID is already used in the target gets a free one instead of failing, and the references between
+    the moved records follow (scripts that look records up by number must be updated by hand).
     """
     source_path, target_path = Path(source_path), Path(target_path)
     if source_path.resolve() == target_path.resolve():
@@ -269,9 +304,15 @@ def move_records(source_path, target_path, records=None, query=None, rename_pref
         if prefix.get('from') and eid.startswith(prefix['from']):
             eid = prefix.get('to', '') + eid[len(prefix['from']):]
             rec.editor_id = eid
-        if rec.form_id.value in taken_ids or eid.lower() in taken_eids:
-            raise ValueError(f'{target_path.name} already has a record {eid} or form ID {rec.form_id.value:08X}')
+        if eid.lower() in taken_eids or (rec.form_id.value in taken_ids and not remap_ids):
+            raise ValueError(f'{target_path.name} already has a record {eid} or form ID {rec.form_id.value:08X}'
+                             + ('; pass remap_ids to give it a new form ID' if rec.form_id.value in taken_ids else ''))
         copies.append(rec)
+    remapped = {}
+    if remap_ids:
+        remapped, next_id = _remap_copies(copies, own, taken_ids)
+        if remapped:
+            dst.header.next_object_id = max(dst.header.next_object_id, next_id)
     scripts_dir = source_path.parent / 'Scripts'
     built = {}
     if mapping:
@@ -290,7 +331,8 @@ def move_records(source_path, target_path, records=None, query=None, rename_pref
     dst.modified = True
     dst.save(str(target_path))
     out = {'moved': [f"{r.signature} {r.editor_id}" for r in copies], 'scripts_built': list(built.values()),
-           'removed_from_source': [], 'still_referenced_by': []}
+           'removed_from_source': [], 'still_referenced_by': [],
+           'remapped_ids': {f'{k:08X}': f'{v:08X}' for k, v in remapped.items()}}
     if remove_from_source:
         res = remove_records(source_path, [f'{r.form_id.value:08X}' for r in seeds])
         out['removed_from_source'], out['still_referenced_by'] = res['removed'], res['still_referenced_by']

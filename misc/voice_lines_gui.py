@@ -40,6 +40,7 @@ class App(tk.Tk):
         self.recording = None
         self.pending_voice = None
         self.calls = queue.Queue()
+        self._build_ui()
         self.after(100, self.poll)
         if plugin:
             self.load(plugin)
@@ -211,7 +212,7 @@ class App(tk.Tk):
                     find_audio(ln, self.plugin, [DATA_DIR] if DATA_DIR.is_dir() else (), bsas)
                 self.calls.put(lambda: self.loaded(model, lines, bsas))
             except Exception as e:
-                self.calls.put(lambda: (self.status.config(text="Load failed"), messagebox.showerror("Load failed", str(e))))
+                self.calls.put(lambda msg=str(e): (self.status.config(text="Load failed"), messagebox.showerror("Load failed", msg)))
         threading.Thread(target=work, daemon=True).start()
 
     def loaded(self, model, lines, bsas):

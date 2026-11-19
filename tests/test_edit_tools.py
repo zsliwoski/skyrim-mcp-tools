@@ -4,6 +4,7 @@ import struct
 import pytest
 import esplib.defs.tes5  # noqa: F401
 from esplib import Plugin, Record, SubRecord, FormID
+from esplib.record import GroupRecord
 
 from tools.records import edit_tools as et
 from tools.books import lore
@@ -34,6 +35,71 @@ def plugin_path(tmp_path):
     _info(p, 0x801)
     p.save(str(path))
     return path
+
+
+def _topic(plugin, dial_id, prompt, replies, quest=0x800):
+    dial = Record('DIAL', FormID(dial_id), 0)
+    dial.subrecords.append(SubRecord('EDID', et.encode(f"Topic{dial_id:X}")))
+    dial.subrecords.append(SubRecord('FULL', et.encode(prompt)))
+    dial.subrecords.append(SubRecord('QNAM', struct.pack('<I', quest)))
+    top = next((g for g in plugin.groups if g.label == 'DIAL'), None)
+    if top is None:
+        top = GroupRecord(0, 'DIAL')
+        plugin.groups.append(top)
+    top.records.append(dial)
+    kids = GroupRecord(7, dial_id)
+    for n, text in enumerate(replies):
+        info = Record('INFO', FormID(dial_id + 1 + n), 0)
+        info.subrecords.append(SubRecord('NAM1', et.encode(text)))
+        kids.records.append(info)
+    top.records.append(kids)
+
+
+@pytest.fixture
+def dialogue_path(tmp_path):
+    path = tmp_path / "Talk.esp"
+    p = Plugin.new_plugin(str(path), masters=[], game='tes5')
+    q = Record('QUST', FormID(0x800), 0)
+    q.subrecords.append(SubRecord('EDID', et.encode("TalkQuest")))
+    p.add_record(q)
+    _topic(p, 0x810, "Short prompt.", ["One. Two. Three."])
+    _topic(p, 0x820, "Two sentences. Here they are.", ["One. Two. Three. Four.", "One."])
+    _topic(p, 0x830, "About that salmon...", ["One. Two. Three."])
+    p.save(str(path))
+    return path
+
+
+def test_list_texts_dialogue_filters_and_paging(dialogue_path):
+    rows = et.list_texts(dialogue_path, quest="TalkQuest", sig="NAM1")
+    assert len(rows) == 4 and rows[0]['topic'] == 'Topic810' and rows[0]['prompt'] == "Short prompt."
+    page = et.list_texts(dialogue_path, type="INFO", limit=2)
+    assert page[-1] == {'truncated': True, 'total': 4, 'next_offset': 2}
+    assert [r['record'] for r in et.list_texts(dialogue_path, record="000821")] == ['000821']
+
+
+def test_edit_texts_by_topic_and_match(dialogue_path):
+    et.edit_texts(dialogue_path, [{'topic': 'Topic820', 'sig': 'FULL', 'text': 'Now one.'},
+                                  {'topic': 'Topic820', 'response': 1, 'sig': 'NAM1', 'text': 'Changed.'},
+                                  {'match': 'One. Two. Three.', 'sig': 'NAM1', 'text': 'Same fix.'}])
+    texts = [r['text'] for r in et.list_texts(dialogue_path, sig='NAM1')]
+    assert texts.count('Same fix.') == 2 and 'Changed.' in texts
+    assert et.list_texts(dialogue_path, record='Topic820', sig='FULL')[0]['text'] == 'Now one.'
+    with pytest.raises(ValueError, match="out of range"):
+        et.edit_texts(dialogue_path, [{'topic': 'Topic810', 'response': 5, 'sig': 'NAM1', 'text': 'x'}])
+
+
+def test_audit_dialogue_length_flags_long_lines(dialogue_path):
+    res = et.audit_dialogue_length(dialogue_path)
+    assert not res['ok']
+    assert {(i['kind'], i['topic']) for i in res['issues']} == {('prompt', 'Topic820'), ('reply', 'Topic820')}
+    assert next(i for i in res['issues'] if i['kind'] == 'reply')['sentences'] == 4
+    assert et.audit_dialogue_length(dialogue_path, max_prompt=2, max_reply=4)['ok']
+
+
+def test_count_sentences_ignores_tags_and_ellipsis():
+    assert et.count_sentences("About that salmon...") == 1
+    assert et.count_sentences("Show me. (Persuade)") == 1
+    assert et.count_sentences("Hah! A sceptic, good. Go and look.") == 3
 
 
 def test_lint_flags_real_world_terms():

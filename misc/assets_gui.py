@@ -150,7 +150,7 @@ class App(tk.Tk):
                 archives = am.archive_index(self.dirs(), self.plugin.name)
                 self.calls.put(lambda: (self.loaded(model, assets, archives), then and then()))
             except Exception as e:
-                self.calls.put(lambda: (self.status.config(text="Load failed"), messagebox.showerror("Load failed", str(e))))
+                self.calls.put(lambda msg=str(e): (self.status.config(text="Load failed"), messagebox.showerror("Load failed", msg)))
         threading.Thread(target=work, daemon=True).start()
 
     def loaded(self, model, assets, archives):
@@ -303,8 +303,8 @@ class App(tk.Tk):
                                          self.archives, DATA_DIR if DATA_DIR.is_dir() else None, mode, model_name)
                 self.calls.put(lambda: self.duplicated(res, a, mode))
             except Exception as e:
-                self.calls.put(lambda: (self.status.config(text="Duplicate failed"),
-                                        messagebox.showerror("Duplicate failed", str(e))))
+                self.calls.put(lambda msg=str(e): (self.status.config(text="Duplicate failed"),
+                                                   messagebox.showerror("Duplicate failed", msg)))
         threading.Thread(target=work, daemon=True).start()
 
     def duplicated(self, res, original=None, mode=None):
@@ -348,7 +348,7 @@ class App(tk.Tk):
                 self.calls.put(lambda: (self.load(self.plugin), messagebox.showinfo(
                     "First person", f"{a.edid} now uses {edid} in first person. Use Install to Data.")))
             except Exception as e:
-                self.calls.put(lambda: (self.status.config(text="Failed"), messagebox.showerror("First person", str(e))))
+                self.calls.put(lambda msg=str(e): (self.status.config(text="Failed"), messagebox.showerror("First person", msg)))
         threading.Thread(target=work, daemon=True).start()
 
     def models(self):
@@ -413,7 +413,7 @@ class App(tk.Tk):
                     "Models", f"{entry.label}: now uses Meshes\\{dest}\\{name}.nif (record {rec}). "
                               f"Use Install to Data so the game sees it.")))
             except Exception as e:
-                self.calls.put(lambda: (self.status.config(text="Failed"), messagebox.showerror("Models", str(e))))
+                self.calls.put(lambda msg=str(e): (self.status.config(text="Failed"), messagebox.showerror("Models", msg)))
         threading.Thread(target=work, daemon=True).start()
 
     def use_model(self):
@@ -450,7 +450,7 @@ class App(tk.Tk):
                 self.calls.put(lambda: (self.load(self.plugin), messagebox.showinfo(
                     "Use model", f"{edid} now uses {source.models[0][1]}. Use Install to Data so the game sees it.")))
             except Exception as e:
-                self.calls.put(lambda: (self.status.config(text="Failed"), messagebox.showerror("Use model", str(e))))
+                self.calls.put(lambda msg=str(e): (self.status.config(text="Failed"), messagebox.showerror("Use model", msg)))
         threading.Thread(target=work, daemon=True).start()
 
     def structure(self):

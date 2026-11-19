@@ -129,12 +129,15 @@ class QuestTools:
             t = {'topic': dial.editor_id or f"{m.rid(dial):08X}", 'prompt': dial.full_name,
                  'responses': len(infos)}
             if include_responses:
-                lines = []
+                lines, ids = [], []
                 for info in infos:
                     resp = next((m.string(s.data, info) for s in info.subrecords if s.signature == 'NAM1'), None)
                     if resp:
                         lines.append(resp)
+                        ids.append(f"{m.rid(info):08X}")
                 t['lines'] = lines
+                t['info_ids'] = ids  # same order as lines; usable with edit_text / edit_texts
+                t['form_id'] = f"{m.rid(dial):08X}"
             for info in infos:
                 spk = info.get_subrecord('ANAM')
                 if spk and u32(spk.data):

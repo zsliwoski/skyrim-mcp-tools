@@ -17,7 +17,9 @@ How to read, author and debug dialogue with the `skyrim-mcp-tools` MCP server.
 | Fragment | `TIF__<name>` script, `Extends TopicInfo`, with `Fragment_0` run when the line begins or ends (INFO fragment flags: 1 begin, 2 end). |
 
 ## Reading dialogue
-- `get_npc_dialogue(npc)` lists the topics and lines an NPC can say, with the quest and conditions.
+- `list_texts(plugin, quest=..., sig="NAM1", offset=...)` lists a quest's replies with their INFO IDs, topic and prompt; `audit_dialogue_length` flags prompts over 1 sentence and replies over 3.
+- `edit_texts` items may use `topic` (+`response` index, `sig` FULL for the prompt or NAM1 for a reply) or `match` (every record with that exact text) instead of `record`.
+- `get_npc_dialogue(npc)` (or `identifier`) lists the topics and lines an NPC can say, with the quest and conditions.
 - `get_quest(id, include_responses=true)` shows a quest's topics and text; `get_quest_structure(id)` adds the interpreted fragments.
 - `get_record(id)` shows the raw subrecords of any DIAL, INFO or QUST when something looks wrong.
 
@@ -38,6 +40,11 @@ edit_npc("MyNpc", {"quest_editor_id": "MyNpcDialogueQuest", "dialogue": [
 ```
 
 Cloning and factions: vanilla hangs many topics on factions (e.g. Sven can be asked about the Bards College, and so can every member of that faction). A clone inherits its source's factions, so it can also inherit unwanted topics. After creating a clone, check `get_npc` and drop or replace factions you don't want (`factions` replaces the whole list), and talk to the NPC in game (or `get_npc_dialogue`) to catch stray topics.
+
+### Keep prompts and replies short
+- A player prompt is at most one sentence.
+- An NPC response is at most three sentences. If more needs saying, split it across follow-up topics (nested `child_of` questions) instead of one long reply.
+- This applies to every line the builders write: offers, stance replies, reminders, turn-ins and barks.
 
 ### Keep the top-level menu short: nest related prompts
 Do not put every prompt in the main conversation list. When three or more prompts belong together, make one parent topic and hang the rest off it with `child_of`, so the player sees one entry instead of many:
@@ -161,12 +168,19 @@ To give a custom NPC this, add `greeting` entries (or `answers` for variants) wi
 ```
 A guard-like or public-facing NPC should have a few of these (quest progress, a notable item, his own faction); a private character needs none. Keep them occasional: a greeting that never changes feels dead, but a remark on every meeting gets tiring, so make each one conditional.
 
+## Plain speech
+Skyrim is not refined. Unless the NPC is an Altmer, a noble or a scholar, write the way the rest of the town talks: contractions ("I'm", "don't", "it's"), short plain words, and no archaic or formal phrasing.
+- Avoid: "Splendid", "at your service", "do come back", "I shall", "I am afraid", "lack", "savour", "stint", "possessive of". Prefer "Good", "Come back", "I'll", "I'm afraid", "need", "take it slow", "skimp".
+- Keep one or two characterful phrases per NPC (a cook's "discerning nose", a Nord's "cold as a Nord's welcome"), not a whole formal register.
+- Only Altmer, and the odd Thalmor or court wizard, should sound formal; see `skyrim-speech-altmer` and the other race skills.
+
 ## Voice and religion
 - Don't make every NPC invoke the gods. Most Skyrim speech has no oath at all, and a trade or hobby topic (gem cutting, smithing, farming) is not a religious context.
 - Per NPC, at most an occasional oath or one passing mention. Across a cast, most lines and most NPCs should have none, so oaths mean something when used. Never open or close lines with one by habit.
 - Give each NPC a different interest instead: craft detail, history and provenance, local rumours, rivalries, money, family, grudges.
 - For topics with a spiritual side (such as gems and stones), lean on the setting's own magic: standing stones, soul gems, Dwemer and Ayleid ruins, Aedric and Daedric lore, mages and alchemists. Show curiosity, not sermons.
 - Keep the oath rules in `skyrim-lore-writing` for the lines that do have one.
+- For the speaking style, vocabulary and typical topics of an NPC's race, use the race skill: `skyrim-speech-nord`, `-imperial`, `-breton`, `-redguard`, `-altmer`, `-bosmer`, `-dunmer`, `-orsimer`, `-khajiit`, `-argonian`. The oaths listed there are options, not defaults; the rule above on oaths still applies.
 - For groups (guilds, halls, towns), add opinions about each other and "Heard any rumors?" flavour as described in `skyrim-group-banter`.
 
 ## Writing fragments by hand

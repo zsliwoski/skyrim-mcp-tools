@@ -1188,6 +1188,91 @@ class NpcBuilder:
                                   "plugin; if the NPC has baked FaceGen its tint will still win")
         return out
 
+    TALKER_KEYS = ('editor_id', 'name', 'model', 'bounds', 'voice_type', 'placement', 'dialogue')
+
+    def add_talker(self, spec, target_plugin):
+        """Add a talking activator (an object such as a barrel the player can talk to) to target_plugin.
+
+        spec: editor_id, name, model (nif path, default a vanilla barrel), bounds (half extents [x, y, z]),
+        voice_type, placement and dialogue (same formats as create_npc). Dialogue is conditioned on the
+        activator's base form (GetIsID), as vanilla talking activators do.
+        """
+        path = resolve_target_path(target_plugin, self.output_dir, self.data_dir)
+        target = Target(self.m, self.names, path, create=True)
+        if target.plugin.is_localized:
+            raise ValueError(f"{path.name} is localized; names and dialogue text cannot be added inline")
+        self.slot_names = {slot: name for name, slot in self.m.slots.items()}
+        p = Plan()
+        p.errors.extend(f"unknown field {k!r}" for k in spec if k not in self.TALKER_KEYS)
+        eid = spec.get('editor_id')
+        if not eid or not re.fullmatch(r'[A-Za-z0-9_]+', str(eid)):
+            p.errors.append("editor_id is required and may contain only letters, digits and underscores")
+        elif any((r.editor_id or '').lower() == str(eid).lower() for r in self.m.records.values()) or \
+                any((r.editor_id or '').lower() == str(eid).lower() for r in target.plugin.records):
+            p.errors.append(f"editor_id {eid!r} already exists")
+        if not spec.get('name'):
+            p.errors.append("name is required")
+        bounds = spec.get('bounds') or [30, 30, 45]
+        if not (isinstance(bounds, (list, tuple)) and len(bounds) == 3
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in bounds)):
+            p.errors.append("bounds must be three half-extents [x, y, z]")
+            bounds = [30, 30, 45]
+        try:
+            z(spec.get('name') or '')
+        except UnicodeEncodeError:
+            p.errors.append("name contains characters outside Windows-1252")
+        model = spec.get('model') or 'Clutter\\Barrel02.nif'
+        voice = self.resolve(p, 'voice_type', spec.get('voice_type'), 'voice_type')
+        if not spec.get('voice_type'):
+            p.warnings.append("no voice_type set; the object will have no voice audio")
+        self.plan_placement(p, spec)
+        self.plan_dialogue(p, spec)
+        if not p.topics:
+            p.errors.append("dialogue is required: a talking activator with no topics cannot be talked to")
+        if p.errors:
+            raise ValueError("; ".join(p.errors))
+
+        self.target, plugin = target, target.plugin
+        self.add_masters(plugin, p)
+        n = len(plugin.header.masters)
+        used = [r.form_id.value & 0xFFFFFF for r in plugin.records if hi(r.form_id.value) == n]
+        self.next_id = max([plugin.header.next_object_id, 0x800] + [u + 1 for u in used])
+        self.plugin = plugin
+        made = []
+
+        def new_id():
+            v = self.next_id
+            self.next_id += 1
+            return v
+
+        tact = Record('TACT', FormID(self.own(new_id())), 0)
+        tact.add_subrecord('EDID', z(eid))
+        tact.add_subrecord('OBND', struct.pack('<6h', *(-int(v) for v in bounds), *(int(v) for v in bounds)))
+        tact.add_subrecord('FULL', z(spec['name']))
+        tact.add_subrecord('MODL', z(model))
+        tact.add_subrecord('PNAM', b'\x00\x00\x00\x00')
+        tact.add_subrecord('FNAM', b'\x00\x00')
+        if voice:
+            tact.add_subrecord('VNAM', fid_bytes(self.local(voice)))
+        plugin.add_record(tact)
+        made.append(self.describe(tact))
+        if p.cell is not None:
+            pl = spec['placement']
+            exterior = any(t == 1 for t, _, _ in p.cell[1])
+            persistent = pl.get('persistent', not exterior)
+            ref = Record('REFR', FormID(self.own(new_id())), 0x400 if persistent else 0)
+            ref.add_subrecord('EDID', z(eid + 'Ref'))
+            ref.add_subrecord('NAME', fid_bytes(tact.form_id.value))
+            ref.add_subrecord('DATA', struct.pack('<6f', pl['x'], pl['y'], pl['z'], 0.0, 0.0,
+                                                  math.radians(pl.get('rotation_z', 0.0))))
+            self.place_ref(plugin, p.cell, ref, persistent, made)
+        self.make_dialogue(plugin, spec, p, new_id, made, tact.form_id.value, alias=False)
+        plugin.header.next_object_id = self.next_id
+        target.save()
+        check = Plugin.load(str(path))
+        return {'path': str(path), 'masters': list(plugin.header.masters), 'records': made,
+                'reloaded_records': len(check.records), 'warnings': p.warnings}
+
     def _face_context(self, rec, plugin):
         """(race editor ID, {head part editor id lower: HDPT}) for an NPC record."""
         m = self.m
@@ -1219,6 +1304,40 @@ class NpcBuilder:
                 'note': 'sliders run -1..1 (positive = first meaning); nose_type/eye_type/lip_type are '
                         'chargen preset numbers (1-based, null = none); weight 0-100'}
 
+    FACE_COPY_SIGS = ('PNAM', 'HCLF', 'QNAM', 'NAM9', 'NAMA', 'TINI', 'TINC', 'TINV', 'TIAS')
+
+    def detach_template(self, target, rec, donor_ident, path):
+        """Give a template-driven NPC its own face: drop the Traits template, copy the donor NPC's head parts,
+        hair colour, tints and face data, and copy the donor's FaceGen files for this NPC. The donor must share
+        race and sex, and should have the look you want to start from (e.g. no beard)."""
+        plugin = target.plugin
+        _, donor = self.resolver.lookup(donor_ident, ['NPC_'])
+        if (rec.get_subrecord('RNAM') and donor.get_subrecord('RNAM')
+                and self.m.absid(plugin, struct.unpack('<I', bytes(rec.get_subrecord('RNAM').data))[0])
+                != self.m.absid(donor.plugin, struct.unpack('<I', bytes(donor.get_subrecord('RNAM').data))[0])):
+            raise ValueError(f"donor {donor.editor_id} has a different race")
+        sex = [bytes(r.get_subrecord('ACBS').data)[0] & 1 for r in (rec, donor)]
+        if sex[0] != sex[1]:
+            raise ValueError(f"donor {donor.editor_id} is not the same sex")
+        for s in [s for s in rec.subrecords if s.signature == 'TPLT']:
+            rec.subrecords.remove(s)
+        acbs = rec.get_subrecord('ACBS')
+        d = bytearray(acbs.data)
+        d[18:20] = b'\0\0'  # template flags
+        acbs.data = bytes(d)
+        for s in [s for s in rec.subrecords if s.signature in self.FACE_COPY_SIGS]:
+            rec.subrecords.remove(s)
+        for s in donor.subrecords:
+            if s.signature not in self.FACE_COPY_SIGS:
+                continue
+            data = bytes(s.data)
+            if s.signature in ('PNAM', 'HCLF'):
+                data = struct.pack('<I', target.local(self.m.absid(donor.plugin, struct.unpack('<I', data)[0])))
+            rec.add_subrecord(s.signature, data)
+        rec.modified = True
+        copied = self.copy_facegen(donor, path, rec.form_id.value & 0xFFFFFF)
+        return {'donor': donor.editor_id, 'facegen': copied}
+
     def edit_face(self, identifier, changes, target_plugin):
         """Change an NPC's face in target_plugin: NAM9/NAMA/NAM7 plus its loose FaceGen mesh."""
         from tools.npcs import facegen
@@ -1230,17 +1349,26 @@ class NpcBuilder:
             fid, src = self.resolver.lookup(identifier, ['NPC_'])
             rec = target.find_matching(fid) or target.override(src)
         plugin = target.plugin
+        changes = dict(changes or {})
+        donor = changes.pop('detach_template', None)
+        detached = None
+        if donor:
+            if rec.get_subrecord('TPLT') is None:
+                raise ValueError("detach_template: the NPC has no template to detach")
+            detached = self.detach_template(target, rec, donor, path)
+            in_place = True
         race, parts = self._face_context(rec, plugin)
         if race.lower().startswith(('argonian', 'khajiit')):
             raise ValueError(f"{race}: beast race faces use different morph files and are not supported")
         old = facegen.decode_face(rec)
-        changes = dict(changes or {})
         beard = changes.pop('beard', None)
         face, errors = facegen.merge_face(old, changes)
         if errors:
             raise ValueError("; ".join(errors))
         facegen.encode_face(rec, face, old)
         out = {'path': str(path), 'npc': rec.editor_id, 'warnings': []}
+        if detached:
+            out['detached_template'] = detached
         mesh = (path.parent / 'Meshes' / 'Actors' / 'Character' / 'FaceGenData' / 'FaceGeom' / path.name
                 / f"{rec.form_id.value & 0xFFFFFF:08X}.nif")
         if in_place and mesh.is_file():
@@ -1703,8 +1831,8 @@ class NpcBuilder:
             raise ValueError(f"unknown quest kind {kind!r}; use one of {', '.join(self.QUEST_KINDS)}")
         return getattr(self, f"add_{kind}_quest")(identifier, spec, target_plugin)
 
-    def make_dialogue(self, plugin, spec, p, new_id, made, npc_fid):
-        """Create (or reuse) the dialogue quest with the NPC as its speaker alias, then add the planned topics."""
+    def make_dialogue(self, plugin, spec, p, new_id, made, npc_fid, alias=True):
+        """Create (or reuse) the dialogue quest with the NPC as its speaker alias (omitted for objects), then add the planned topics."""
         qid = spec.get('quest_editor_id') or spec['editor_id'] + 'DialogueQuest'
         quest = self.target.find_own(qid, ['QUST']) if self.target else None
         if quest is None:
@@ -1712,13 +1840,14 @@ class NpcBuilder:
             quest.add_subrecord('EDID', z(qid))
             quest.add_subrecord('DNAM', struct.pack('<HBBII', 0x11, 50, 0, 0, 0))
             quest.add_subrecord('NEXT', b'')
-            quest.add_subrecord('ANAM', struct.pack('<I', 1))
-            quest.add_subrecord('ALST', struct.pack('<I', 0))
-            quest.add_subrecord('ALID', z(spec.get('alias_name') or 'Speaker'))
-            quest.add_subrecord('FNAM', struct.pack('<I', 2))
-            quest.add_subrecord('ALUA', fid_bytes(npc_fid))
-            quest.add_subrecord('VTCK', fid_bytes(0))
-            quest.add_subrecord('ALED', b'')
+            quest.add_subrecord('ANAM', struct.pack('<I', 1 if alias else 0))
+            if alias:
+                quest.add_subrecord('ALST', struct.pack('<I', 0))
+                quest.add_subrecord('ALID', z(spec.get('alias_name') or 'Speaker'))
+                quest.add_subrecord('FNAM', struct.pack('<I', 2))
+                quest.add_subrecord('ALUA', fid_bytes(npc_fid))
+                quest.add_subrecord('VTCK', fid_bytes(0))
+                quest.add_subrecord('ALED', b'')
             plugin.add_record(quest)
             made.append(self.describe(quest))
         existing = sum(1 for r in plugin.records if r.signature == 'DIAL'
