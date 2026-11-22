@@ -34,6 +34,8 @@ EXPECTED_TOOLS = {
         "enchantment_test_plan", "check_script", "resolve_form", "create_script_effects", "create_enchanted_item",
         "lore_search", "lore_get", "lore_status", "build_lore_db",
         "api_search", "api_get", "api_status", "build_api_db",
+        "create_quest", "add_quest_stage", "add_quest_objective", "build_quest", "edit_quest_alias",
+        "remove_quest_alias", "attach_alias_script", "attach_quest_script", "add_clue_set", "add_quest_dialogue",
     }
 
 
