@@ -12,6 +12,8 @@ from tools.npcs.npc_builder import Plan, fid_bytes, z
 from tools.papyrus.papyrus_build import compile_script
 from tools.core.plugin_edit import Target, hi, resolve_target_path
 from tools.quests.quest_builder import EQ, GE, LT, GET_STAGE, SUBJECT
+from tools.quests.quest_core import (write_alias, write_header, write_next_alias_id, write_objective,
+                                     write_stage)
 
 QUEST_TYPE_SIDE = 8
 
@@ -120,32 +122,14 @@ def add_kill_quest(b, identifier, spec, target_plugin):
     made.append({'type': 'script', 'editor_id': sname, 'object_id': str(pex)})
 
     q = Record('QUST', FormID(quest_fid), 0)
-    q.add_subrecord('EDID', z(qid))
-    q.add_subrecord('FULL', z(spec['quest_name']))
-    q.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, 50, 0, 0, QUEST_TYPE_SIDE))
-    q.add_subrecord('NEXT', b'')
+    write_header(q, qid, spec['quest_name'], quest_type=QUEST_TYPE_SIDE)
     for idx, text in sorted((int(k), v) for k, v in spec['log'].items()):
-        q.add_subrecord('INDX', struct.pack('<HBB', idx, 0, 0))
-        q.add_subrecord('QSDT', struct.pack('<B', 1 if idx >= 30 else 0))
-        q.add_subrecord('CNAM', z(text))
+        write_stage(q, idx, text)
     for idx, text in sorted((int(k), v) for k, v in spec['objectives'].items()):
-        q.add_subrecord('QOBJ', struct.pack('<H', idx))
-        q.add_subrecord('FNAM', struct.pack('<I', 0))
-        q.add_subrecord('NNAM', z(text))
-        q.add_subrecord('QSTA', struct.pack('<II', 1, 0) if idx == 10 else struct.pack('<II', 0, 1))
-    q.add_subrecord('ANAM', struct.pack('<I', 2))
-    q.add_subrecord('ALST', struct.pack('<I', 0))
-    q.add_subrecord('ALID', z('QuestGiver'))
-    q.add_subrecord('FNAM', struct.pack('<I', 2))
-    q.add_subrecord('ALUA', fid_bytes(npc_fid))
-    q.add_subrecord('VTCK', fid_bytes(0))
-    q.add_subrecord('ALED', b'')
-    q.add_subrecord('ALST', struct.pack('<I', 1))
-    q.add_subrecord('ALID', z('Target'))
-    q.add_subrecord('FNAM', struct.pack('<I', 2))
-    q.add_subrecord('ALFR', fid_bytes(achr.form_id.value))
-    q.add_subrecord('VTCK', fid_bytes(0))
-    q.add_subrecord('ALED', b'')
+        write_objective(q, idx, text, [(1, 0) if idx == 10 else (0, 1)])
+    write_next_alias_id(q, 2)
+    write_alias(q, 0, 'QuestGiver', 2, [('ALUA', fid_bytes(npc_fid))])
+    write_alias(q, 1, 'Target', 2, [('ALFR', fid_bytes(achr.form_id.value))])
     plugin.add_record(q)
     made.append(b.describe(q))
 

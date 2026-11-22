@@ -13,7 +13,8 @@ Use `clone_record(source, target_plugin, editor_id, name=, description=, signatu
 - Plugins being authored resolve by bare file name (the output folder wins over Data). Records already in `target_plugin` are visible to `edit_npc`, `edit_record`, `create_record`, `clone_record(s)` and `place_item` without listing it in `plugins`.
 - The plugin must not be localized: FULL/DESC are stored as inline z-strings, not string-table IDs. A leftover 4-byte lstring (e.g. BOOK `CNAM`) would be read as text, so the tool drops it.
 - `description` sets `DESC`, which is a book's readable text (HTML-like `<p align=...>` markup is allowed). A cloned book keeps the source's model; for notes, journals or longer books use `edit_book` (sets `MODL`/`MODT`/`INAM`/`OBND`/`DATA` together and formats the text) and write the text as described in `skyrim-book-writing`.
-- Weapon descriptions must not say "off-hand" or "main hand": any one-handed weapon can go in either hand. A pair can say it "pairs well with" its partner.
+- Weapon descriptions must not say "off-hand" or "main hand": any one-handed weapon can go in either hand. Don't add "pairs with" lines either.
+- An enchanted weapon's description should contain only the enchantment's effect in plain words (e.g. "Sets its target ablaze, dealing fire damage over time."), with no flavour sentence. Update it whenever the enchantment changes.
 - Pass `signature` (BOOK, WEAP, MISC...) when an editor ID could match several types.
 - Look up enchantments and effects with `search_forms("ENCH", ...)` / `("MGEF", ...)`. If a type returns nothing, add it to `LOAD_SIGS` in `tools/core/quest_model.py`.
 - Weapon enchantment: add `EITM` (form of the ENCH) then `EAMT` (uint16 charge), both before `ETYP`. `add_plant_quest` does this for `reward_weapon.enchantment`. To author a new ENCH use `create_enchantment` (see `skyrim-enchantments`).

@@ -13,7 +13,9 @@ mcp = MCPServer("skyrim-mcp-tools")
 # Tools that read-modify-write plugin files. Concurrent calls (e.g. several clone_record calls in one
 # batch) would load the same file, each add a record and overwrite each other, so they run one at a time.
 WRITE_TOOLS = {
-    'create_record', 'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'staged_fight',
+    'create_record', 'create_quest', 'edit_quest_alias', 'remove_quest_alias', 'add_quest_stage',
+    'add_quest_objective', 'build_quest', 'attach_alias_script', 'attach_quest_script', 'add_quest_dialogue', 'add_clue_set',
+    'add_quest_alias', 'add_quest_stage_script', 'add_npc_chat', 'staged_fight',
     'add_follower_controls',
     'create_faction', 'create_package', 'write_npc_plugin', 'create_npc',
     'edit_npc', 'add_fetch_quest', 'add_kill_quest', 'add_plant_quest', 'add_radiant_quest', 'add_quest',
@@ -374,17 +376,106 @@ def create_record(target_plugin: str, signature: str, editor_id: str, subrecords
 @mcp.tool()
 def add_quest_alias(quest: str, target_plugin: str, name: str, reference: str | None = None,
                     npc: str | None = None, objectives: list[int] | None = None,
-                    reference_plugin: str = "Skyrim.esm", plugins: list[str] | None = None) -> dict:
+                    reference_plugin: str = "Skyrim.esm", flags: list[str] | None = None,
+                    location: str | None = None, external: dict | None = None,
+                    plugins: list[str] | None = None) -> dict:
     """Add an alias to a quest in target_plugin, optionally making it the compass-marker target of objectives.
 
-    Give either reference (editor ID of a reference in target_plugin, or a hex reference ID from
-    search_references in reference_plugin; it should be persistent) or npc (editor ID/name/form ID).
+    Give exactly one fill: reference (editor ID of a reference in target_plugin, or a hex reference ID from
+    search_references in reference_plugin; it should be persistent), npc (editor ID/name/form ID, a unique
+    actor), location (a LCTN, making a location alias) or external {quest, alias} (reuse another quest's alias).
     objectives: objective numbers whose target becomes this alias.
+    flags: reserved, optional, quest_object, allow_reuse, allow_dead, in_loaded_area, essential,
+    allow_disabled, stores_text, allow_reserved, protected (default: optional for npc, none otherwise).
     """
     try:
         from tools.quests.quest_edit import add_quest_alias as run
         res = run(npc_builder(plugins), quest, target_plugin, name, reference, reference_plugin, npc,
-                  objectives or [])
+                  objectives or [], flags, location, external)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def edit_quest_alias(quest: str, target_plugin: str, alias: str, flags: list[str],
+                     plugins: list[str] | None = None) -> dict:
+    """Replace the flags of an existing quest alias (names as in add_quest_alias)."""
+    try:
+        from tools.quests.quest_edit import edit_quest_alias as run
+        _auto_snapshot(target_plugin, "pre_edit_quest_alias")
+        res = run(npc_builder(plugins), quest, target_plugin, alias, flags)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def remove_quest_alias(quest: str, target_plugin: str, alias: str, plugins: list[str] | None = None) -> dict:
+    """Remove a quest alias, the objective targets pointing at it and its alias scripts. If the quest's stage
+    script has an Alias_<name> property, rebuild it with add_quest_stage_script afterwards."""
+    try:
+        from tools.quests.quest_edit import remove_quest_alias as run
+        _auto_snapshot(target_plugin, "pre_remove_quest_alias")
+        res = run(npc_builder(plugins), quest, target_plugin, alias)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def attach_alias_script(quest: str, target_plugin: str, alias: str, script: str, properties: dict | None = None,
+                        source: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Bind a Papyrus script to a quest alias. source: Papyrus source (Scriptname must equal script) that is
+    compiled for you; omit it to bind a script that already exists, such as a stock one
+    (defaultSetStageAliasScript, DefaultAddItemAliasScript). properties: {name: value} where a bool, int, float
+    or str binds that type, a list of ints or strs binds an array, {"form": id} binds a record and
+    {"alias": name} binds an alias of this quest. Each property must be declared by the script. Other
+    scripts, fragments and properties already set are kept. Run package_plugin afterwards.
+    """
+    try:
+        from tools.quests.quest_scripts import attach_alias_script as run
+        _auto_snapshot(target_plugin, "pre_attach_alias_script")
+        res = run(npc_builder(plugins), quest, target_plugin, alias, script, properties, source)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def attach_quest_script(quest: str, target_plugin: str, script: str, properties: dict | None = None,
+                        source: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Bind a Papyrus script to a quest (compiled from source, or an existing/stock script). properties as in
+    attach_alias_script. Calling it again with new properties rebinds only those. The stage fragment script
+    and alias scripts are kept. Run package_plugin afterwards.
+    """
+    try:
+        from tools.quests.quest_scripts import attach_quest_script as run
+        _auto_snapshot(target_plugin, "pre_attach_quest_script")
+        res = run(npc_builder(plugins), quest, target_plugin, script, properties, source)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_clue_set(quest: str, target_plugin: str, clues: list[dict], done_stage: int | None = None,
+                 done_log: str | None = None, script: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Turn persistent references into clues for an investigation. clues: [{alias, reference, stage, log}]:
+    each reference becomes an alias of the quest (reference is an editor ID in target_plugin or a hex ID from
+    search_references in reference_plugin); when the player activates it, its stage is set once. done_stage:
+    set once every clue stage is done. Missing stages are created with their log. One alias script is
+    generated and shared. Run package_plugin afterwards.
+    """
+    try:
+        from tools.quests.quest_scripts import add_clue_set as run
+        _auto_snapshot(target_plugin, "pre_add_clue_set")
+        res = run(npc_builder(plugins), quest, target_plugin, clues, done_stage, done_log, script)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:
@@ -393,8 +484,9 @@ def add_quest_alias(quest: str, target_plugin: str, name: str, reference: str | 
 
 @mcp.tool()
 def add_quest_stage_script(quest: str, target_plugin: str, stages: dict, properties: dict | None = None,
-                           plugins: list[str] | None = None) -> dict:
+                           merge: bool = False, plugins: list[str] | None = None) -> dict:
     """Run Papyrus code when quest stages are set (a quest QF fragment script, compiled for you).
+    merge: true adds to the quest's existing stage script instead of replacing it.
 
     stages: {"20": "SetObjectiveDisplayed(30)\\nCompleteQuest()"}; code runs inside the quest and the
     stages must exist. properties: {name: form} become Form properties usable in the code; each alias also
@@ -403,7 +495,79 @@ def add_quest_stage_script(quest: str, target_plugin: str, stages: dict, propert
     """
     try:
         from tools.quests.quest_edit import add_quest_stage_script as run
-        res = run(npc_builder(plugins), quest, target_plugin, stages, properties)
+        res = run(npc_builder(plugins), quest, target_plugin, stages, properties, merge)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def create_quest(target_plugin: str, editor_id: str, name: str, quest_type: str = "Side Quests",
+                 priority: int = 50, flags: list[str] | None = None, plugins: list[str] | None = None) -> dict:
+    """Create an empty quest (no stages, objectives or aliases) in target_plugin; build it up with
+    add_quest_stage, add_quest_objective and add_quest_alias, or use build_quest for all at once.
+
+    quest_type: a name or unique prefix ('side', 'misc', 'thieves', 'main', 'dark', 'companion', 'daedric',
+    'civil'). flags: start_game_enabled, wilderness, allow_repeated_stages, run_once,
+    exclude_from_dialogue_export, warn_on_alias_fill_failure.
+    """
+    try:
+        from tools.quests.quest_author import create_quest as run
+        _auto_snapshot(target_plugin, "pre_create_quest")
+        b = npc_builder(_with_target(plugins, target_plugin))
+        target, q = run(b, target_plugin, editor_id, name, quest_type, priority, flags)
+        target.save()
+        _invalidate()
+        return {'path': str(target.path), 'quest': editor_id, 'quest_type': quest_type}
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_quest_stage(quest: str, target_plugin: str, stage: int, log: str | None = None,
+                    flags: list[str] | None = None, complete_quest: bool = False, code: str | None = None,
+                    plugins: list[str] | None = None) -> dict:
+    """Add a stage to a quest in index order. log is the journal entry; complete_quest completes the quest
+    when set; flags: start_up, shut_down, keep_instance_data. code is Papyrus run inside the quest when the
+    stage is set (e.g. "SetObjectiveDisplayed(20)"); it is merged into the quest's stage script.
+    """
+    try:
+        from tools.quests.quest_author import add_quest_stage as run
+        _auto_snapshot(target_plugin, "pre_add_quest_stage")
+        res = run(npc_builder(plugins), quest, target_plugin, stage, log, flags, complete_quest, code)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_quest_objective(quest: str, target_plugin: str, index: int, text: str, targets: list[str] | None = None,
+                        or_with_previous: bool = False, plugins: list[str] | None = None) -> dict:
+    """Add an objective to a quest. targets: names of existing aliases whose references become its compass
+    markers. or_with_previous: displayed together with the previous objective.
+    """
+    try:
+        from tools.quests.quest_author import add_quest_objective as run
+        _auto_snapshot(target_plugin, "pre_add_quest_objective")
+        res = run(npc_builder(plugins), quest, target_plugin, index, text, targets or [], or_with_previous)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def build_quest(target_plugin: str, spec: dict, plugins: list[str] | None = None) -> dict:
+    """Build a whole quest in one save: {editor_id, name, quest_type, priority, flags, stages: [{stage, log,
+    flags, complete_quest, code}], objectives: [{index, text, or_with_previous}], aliases: [{name, reference
+    | npc, reference_plugin, objectives: [objective numbers it marks]}]}. Nothing is written if any part fails.
+    """
+    try:
+        from tools.quests.quest_author import build_quest as run
+        _auto_snapshot(target_plugin, "pre_build_quest")
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, spec)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:
@@ -658,6 +822,29 @@ def edit_npc(identifier: str, fields: dict, target_plugin: str, plugins: list[st
     """
     try:
         res = npc_builder(_with_target(plugins, target_plugin)).edit_npc(identifier, fields, target_plugin)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def add_quest_dialogue(target_plugin: str, npc: str, topics: list[dict], quest: str | None = None,
+                       dialogue_quest: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Add dialogue to an existing NPC that is offered only at certain stages of a quest, and can advance it.
+
+    topics use the dialogue fields of create_npc (kind, prompt, lines or answers, child_of, loop, give_items,
+    conditions, ...) plus quest sugar: stage_min / stage_max (GetStage bounds), stage_done / not_stage_done
+    (GetStageDone for one stage), set_stage (sets that stage when the line ends) and on_say (Papyrus run then).
+    quest is the default quest for the sugar; a topic may name its own with "quest". Topics are added to the
+    NPC's dialogue quest (created if missing) or to dialogue_quest. Returns the DIAL topics and INFO IDs.
+    Run package_plugin afterwards.
+    """
+    try:
+        from tools.quests.quest_dialogue import add_quest_dialogue as run
+        _auto_snapshot(target_plugin, "pre_add_quest_dialogue")
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, npc, topics, quest,
+                  dialogue_quest)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:

@@ -14,6 +14,7 @@ from esplib.utils import FormID
 from tools.npcs.npc_builder import Plan, fid_bytes, z
 from tools.core.plugin_edit import Target, hi, resolve_target_path
 from tools.quests.quest_edit import add_quest_stage_script
+from tools.quests.quest_core import write_alias, write_header, write_next_alias_id, write_objective, write_stage
 
 GET_STAGE = 58
 EQ, NE = 0, 1
@@ -162,56 +163,26 @@ def add_story_radiant_quest(b, identifier, spec, target_plugin):
         quest_fids.append(qfid)
         quest_ids.append(f"{prefix}_{i}")
         q = Record('QUST', FormID(qfid), 0)
-        q.add_subrecord('EDID', z(f"{prefix}_{i}"))
-        q.add_subrecord('FULL', z(spec['quest_name']))
-        q.add_subrecord('DNAM', struct.pack('<HBBII', 0, 50, 0, 0, 6))
-        q.add_subrecord('ENAM', b'SCPT')
-        q.add_subrecord('NEXT', b'')
+        write_header(q, f"{prefix}_{i}", spec['quest_name'], flags=0, quest_type=6, event=b'SCPT')
         log = spec.get('log') or {}
         for idx, flags, qsdt, text in (
                 (0, 2, 0, None),
                 (ACTIVE, 0, 0, log.get('10', "I have taken a contract. The stones are in a chest deep in a dungeon.")),
                 (DONE, 0, 1, log.get('20', "I delivered the stones and was paid."))):
-            q.add_subrecord('INDX', struct.pack('<HBB', idx, flags, 0))
-            q.add_subrecord('QSDT', struct.pack('<B', qsdt))
-            if text:
-                q.add_subrecord('CNAM', z(text))
-        q.add_subrecord('QOBJ', struct.pack('<H', ACTIVE))
-        q.add_subrecord('FNAM', struct.pack('<I', 0))
-        q.add_subrecord('NNAM', z(f"Recover {int(it['count'])} {it['name']} from the chest in <Alias=GemLocation>"))
-        q.add_subrecord('QSTA', struct.pack('<II', CHEST, 0))
-        q.add_subrecord('ANAM', struct.pack('<I', 4))
+            write_stage(q, idx, text or None, flags=flags, complete=qsdt)
+        write_objective(q, ACTIVE, f"Recover {int(it['count'])} {it['name']} from the chest in <Alias=GemLocation>",
+                        [(CHEST, 0)])
+        write_next_alias_id(q, 4)
 
-        q.add_subrecord('ALST', struct.pack('<I', GIVER))
-        q.add_subrecord('ALID', z('Questgiver'))
-        q.add_subrecord('FNAM', struct.pack('<I', 0))
-        q.add_subrecord('ALUA', fid_bytes(npc.form_id.value))
-        q.add_subrecord('VTCK', fid_bytes(0))
-        q.add_subrecord('ALED', b'')
-
-        q.add_subrecord('ALLS', struct.pack('<I', LOCATION))
-        q.add_subrecord('ALID', z('GemLocation'))
-        q.add_subrecord('FNAM', struct.pack('<I', 0x100))
-        for c in location_conditions(b.local(loc_kw), b.local(BOSS_CONTAINER)):
-            q.add_subrecord('CTDA', c)
-        q.add_subrecord('ALED', b'')
-
-        q.add_subrecord('ALST', struct.pack('<I', CHEST))
-        q.add_subrecord('ALID', z('GemContainer'))
-        q.add_subrecord('FNAM', struct.pack('<I', 0))
-        q.add_subrecord('ALFA', struct.pack('<I', LOCATION))
-        q.add_subrecord('ALRT', fid_bytes(b.local(BOSS_CONTAINER)))
-        q.add_subrecord('VTCK', fid_bytes(0))
-        q.add_subrecord('ALED', b'')
-
-        q.add_subrecord('ALST', struct.pack('<I', LOOT))
-        q.add_subrecord('ALID', z('Gems'))
-        q.add_subrecord('FNAM', struct.pack('<I', 0x104))
-        q.add_subrecord('ALCO', fid_bytes(lvli_fid))
-        q.add_subrecord('ALCA', struct.pack('<HH', CHEST, 0x8000))
-        q.add_subrecord('ALCL', struct.pack('<I', 0))
-        q.add_subrecord('VTCK', fid_bytes(0))
-        q.add_subrecord('ALED', b'')
+        write_alias(q, GIVER, 'Questgiver', 0, [('ALUA', fid_bytes(npc.form_id.value))])
+        write_alias(q, LOCATION, 'GemLocation', 0x100,
+                    [('CTDA', c) for c in location_conditions(b.local(loc_kw), b.local(BOSS_CONTAINER))],
+                    start='ALLS', vtck=False)
+        write_alias(q, CHEST, 'GemContainer', 0,
+                    [('ALFA', struct.pack('<I', LOCATION)), ('ALRT', fid_bytes(b.local(BOSS_CONTAINER)))])
+        write_alias(q, LOOT, 'Gems', 0x104,
+                    [('ALCO', fid_bytes(lvli_fid)), ('ALCA', struct.pack('<HH', CHEST, 0x8000)),
+                     ('ALCL', struct.pack('<I', 0))])
         plugin.add_record(q)
         made.append(b.describe(q))
 

@@ -204,5 +204,14 @@ Check in this order, using the in-game console:
 5. A cloned NPC inherits the original's packages and factions, which can change who can talk to it. Check `get_npc`.
 6. Script not firing: confirm the `.pex` is in the mod's `Scripts` folder and the script name matches the INFO `VMAD`.
 
+## Stage-gated dialogue (`add_quest_dialogue`)
+For lines an existing NPC says only at certain stages of a quest, and that can advance it:
+`add_quest_dialogue(plugin, npc, topics, quest=, dialogue_quest=)`. Topics take the usual dialogue fields (`kind`, `prompt`, `lines`/`answers`, `child_of`, `loop`, `give_items`, `conditions`) plus:
+- `stage_min` / `stage_max`: `GetStage` bounds on `quest`.
+- `stage_done` / `not_stage_done`: `GetStageDone` for one stage.
+- `set_stage`: sets that stage when the line ends (compiled into a TIF fragment).
+- `on_say`: extra Papyrus run then. A topic may name its own `quest`.
+Typical gating: a pre-clue topic `stage_max: 9`, a mid-investigation topic `stage_min: 10, stage_max: 19, not_stage_done: 20`, an accusation with `set_stage`. It works on vanilla NPCs by adding an override. Conditions are not shown by `get_npc_dialogue`; use `list_conditions`. Not verified in game: pointing `dialogue_quest` at a quest with no speaker alias. See `skyrim-quest-building`.
+
 ## Known gaps
-No per-answer conditions, no voice files, no scenes, no quest stages from dialogue, and no `.seq` generation. A challenge (see "Optional checks") only gates a topic; it does not drive quest stages beyond the accepting reply of `add_fetch_quest`. State these rather than guessing when asked to do them.
+No per-answer conditions, no voice files, no scenes and no `.seq` generation in the dialogue tools (`package_plugin` makes the SEQ). Quest stages from dialogue are covered by `set_stage` (see above) and `add_fetch_quest`. A challenge (see "Optional checks") only gates a topic. State these rather than guessing when asked to do them.

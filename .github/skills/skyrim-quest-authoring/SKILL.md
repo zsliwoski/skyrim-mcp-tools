@@ -68,7 +68,17 @@ Players add mods to running saves, so a quest plugin must start itself there. Ve
 - Not yet automated: no builder writes the bootstrap quest. Build it with `create_record` plus `create_script`/`papyrus_build`, then test by installing onto a save made before the plugin existed.
 
 ## Not yet automated
-Scenes, quest start from a script, and alias scripts. Use `create_record` plus `papyrus_build` as building blocks, and test in game.
+Scenes and trigger volumes. Use `create_record` plus `papyrus_build` as building blocks, and test in game.
+
+## Custom quest shapes
+When fetch/kill/plant do not fit, build from parts; see `skyrim-quest-building` and `skyrim-alias-scripts`.
+| Need | Tool |
+|---|---|
+| New quest with any stages/objectives/aliases | `build_quest` (or `create_quest` + `add_quest_stage` + `add_quest_objective`) |
+| Script on an alias or quest | `attach_alias_script`, `attach_quest_script` |
+| Investigation clues | `add_clue_set` |
+| NPC lines gated on a stage | `add_quest_dialogue` |
+| Alias flags, location/external fills | `add_quest_alias`, `edit_quest_alias`, `remove_quest_alias` |
 
 ## Markers, aliases and stage scripts
 - `add_fetch_quest` now defaults to `marker: true`: the item reference is persistent (placed in the worldspace's persistent cell) and a `QuestItem` alias is the compass target of objective 10. Pass `marker: false` for the old non-persistent behaviour.

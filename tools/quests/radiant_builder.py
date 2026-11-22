@@ -8,6 +8,7 @@ from esplib.utils import FormID
 
 from tools.npcs.npc_builder import Plan, z
 from tools.core.plugin_edit import Target, hi, resolve_target_path
+from tools.quests.quest_core import write_header, write_next_alias_id, write_objective, write_stage
 
 GET_STAGE = 58
 EQ, NE = 0, 1
@@ -140,21 +141,14 @@ def add_radiant_quest(b, identifier, spec, target_plugin):
         made.append(b.describe(g))
 
     q = Record('QUST', FormID(quest_fid), 0)
-    q.add_subrecord('EDID', z(qid))
-    q.add_subrecord('FULL', z(spec['quest_name']))
-    q.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, 50, 0, 0, QUEST_TYPE_MISC))
-    q.add_subrecord('NEXT', b'')
+    write_header(q, qid, spec['quest_name'], quest_type=QUEST_TYPE_MISC)
     log = spec.get('log') or {}
     for idx, text in ((ACTIVE, log.get('10', "I have taken a contract. I should collect what was asked.")),
                       (DONE, log.get('20', "I delivered what was asked and was paid."))):
-        q.add_subrecord('INDX', struct.pack('<HBB', idx, 0, 0))
-        q.add_subrecord('QSDT', struct.pack('<B', 0))
-        q.add_subrecord('CNAM', z(text))
+        write_stage(q, idx, text, complete=0)
     for i, it in enumerate(items):
-        q.add_subrecord('QOBJ', struct.pack('<H', ACTIVE + i))
-        q.add_subrecord('FNAM', struct.pack('<I', 0))
-        q.add_subrecord('NNAM', z(f"Collect <Global={qid}_Count> {it['name']}"))
-    q.add_subrecord('ANAM', struct.pack('<I', 0))
+        write_objective(q, ACTIVE + i, f"Collect <Global={qid}_Count> {it['name']}")
+    write_next_alias_id(q, 0)
     plugin.add_record(q)
     made.append(b.describe(q))
 

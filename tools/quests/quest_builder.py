@@ -11,6 +11,8 @@ from tools.npcs import challenges
 from tools.npcs.npc_builder import Plan, fid_bytes, z
 from tools.papyrus.papyrus_build import compile_script
 from tools.core.plugin_edit import Target, hi, resolve_target_path
+from tools.quests.quest_core import (write_alias, write_header, write_next_alias_id, write_objective,
+                                     write_stage)
 
 GET_ITEM_COUNT, GET_STAGE = 47, 58
 EQ, GE, LT = 0, 3, 4
@@ -151,40 +153,19 @@ def add_fetch_quest(b, identifier, spec, target_plugin):
 
     # quest
     q = Record('QUST', FormID(quest_fid), 0)
-    q.add_subrecord('EDID', z(qid))
-    q.add_subrecord('FULL', z(spec['quest_name']))
-    q.add_subrecord('DNAM', struct.pack('<HBBII', 0x1, 50, 0, 0, QUEST_TYPE_MISC))
-    q.add_subrecord('NEXT', b'')
+    write_header(q, qid, spec['quest_name'], quest_type=QUEST_TYPE_MISC)
     log = {int(k): v for k, v in spec['log'].items()}
     if 'options' in spec['offer']:
         log[REFUSED_STAGE] = None  # hidden stage marking a declined offer, with no journal entry
     for idx, text in sorted(log.items()):
-        q.add_subrecord('INDX', struct.pack('<HBB', idx, 0, 0))
-        q.add_subrecord('QSDT', struct.pack('<B', 1 if idx >= 30 else 0))
-        if text is not None:
-            q.add_subrecord('CNAM', z(text))
+        write_stage(q, idx, text)
     for idx, text in sorted((int(k), v) for k, v in spec['objectives'].items()):
-        q.add_subrecord('QOBJ', struct.pack('<H', idx))
-        q.add_subrecord('FNAM', struct.pack('<I', 0))
-        q.add_subrecord('NNAM', z(text))
-        if idx == 10 and spec.get('marker', True):
-            q.add_subrecord('QSTA', struct.pack('<II', 1, 0))
-        if idx == 20:
-            q.add_subrecord('QSTA', struct.pack('<II', 0, 1))
-    q.add_subrecord('ANAM', struct.pack('<I', 2 if spec.get('marker', True) else 1))
-    q.add_subrecord('ALST', struct.pack('<I', 0))
-    q.add_subrecord('ALID', z(spec.get('alias_name') or 'QuestGiver'))
-    q.add_subrecord('FNAM', struct.pack('<I', 2))
-    q.add_subrecord('ALUA', fid_bytes(npc_fid))
-    q.add_subrecord('VTCK', fid_bytes(0))
-    q.add_subrecord('ALED', b'')
+        targets = [(1, 0)] if idx == 10 and spec.get('marker', True) else [(0, 1)] if idx == 20 else []
+        write_objective(q, idx, text, targets)
+    write_next_alias_id(q, 2 if spec.get('marker', True) else 1)
+    write_alias(q, 0, spec.get('alias_name') or 'QuestGiver', 2, [('ALUA', fid_bytes(npc_fid))])
     if spec.get('marker', True):
-        q.add_subrecord('ALST', struct.pack('<I', 1))
-        q.add_subrecord('ALID', z('QuestItem'))
-        q.add_subrecord('FNAM', struct.pack('<I', 2 | QUEST_OBJECT))
-        q.add_subrecord('ALFR', fid_bytes(ref.form_id.value))
-        q.add_subrecord('VTCK', fid_bytes(0))
-        q.add_subrecord('ALED', b'')
+        write_alias(q, 1, 'QuestItem', 2 | QUEST_OBJECT, [('ALFR', fid_bytes(ref.form_id.value))])
     plugin.add_record(q)
     made.append(b.describe(q))
 

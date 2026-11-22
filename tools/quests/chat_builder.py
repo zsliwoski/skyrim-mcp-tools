@@ -10,6 +10,7 @@ from esplib.utils import FormID
 from tools.core.plugin_edit import Target, hi, resolve_target_path
 from tools.npcs.npc_builder import GET_IS_ID, Plan, fid_bytes, z
 from tools.papyrus.papyrus_build import script_name
+from tools.quests.quest_core import write_alias
 from tools.records.maintenance import all_records
 
 SCENE_FLAGS = 0x10
@@ -121,12 +122,7 @@ def ensure_alias(quest, npc_fid, name):
     if anam is None:
         raise ValueError("chat quest has no ANAM (next alias ID)")
     anam.data = struct.pack('<I', new + 1)
-    quest.add_subrecord('ALST', struct.pack('<I', new))
-    quest.add_subrecord('ALID', z(name))
-    quest.add_subrecord('FNAM', struct.pack('<I', ALIAS_OPTIONAL_REUSE))
-    quest.add_subrecord('ALUA', fid_bytes(npc_fid))
-    quest.add_subrecord('VTCK', fid_bytes(0))
-    quest.add_subrecord('ALED', b'')
+    write_alias(quest, new, name, ALIAS_OPTIONAL_REUSE, [('ALUA', fid_bytes(npc_fid))])
     return new
 
 
