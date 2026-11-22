@@ -132,7 +132,7 @@ def apply_alias(b, target, q, name, reference=None, reference_plugin='Skyrim.esm
             end += 1
         q.add_subrecord('QSTA', struct.pack('<II', new_id, 0))
         q.subrecords.insert(end, q.subrecords.pop())
-    write_alias(q, new_id, name, flag_bits, fills, start=start, vtck=start == 'ALST' and external is None)
+    write_alias(q, new_id, name, flag_bits, fills, start=start, vtck=start == 'ALST')
     q.modified = True
     return {'path': str(target.path), 'alias_id': new_id, 'alias': name, 'objectives': list(objectives)}
 

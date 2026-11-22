@@ -26,7 +26,10 @@ SEX_PARAM = {'male': 0, 'female': 1}
 KEYS = {'scene_editor_id', 'quest_editor_id', 'speaker', 'partner', 'lines', 'trigger_lines', 'trigger_line',
         'dialogue_quest_editor_id', 'partner_reference', 'distance', 'hired', 'random_percent', 'once',
         'conditions'}
-FIGHT_KEYS = {'prompt', 'timeout', 'stop_on_player', 'unarmed', 'bleedout'}
+FIGHT_KEYS = {'prompt', 'timeout', 'stop_on_player', 'unarmed', 'bleedout', 'brute', 'unarmed_damage',
+              'knockdown_force', 'knockdown_sound', 'drop_shoes', 'shoes_return_delay'}
+KNOCKDOWN_SOUND = 0x3F1F4  # NPCDragonLandCrashShortSD, played on the brute when the knockdown lands
+SHOES_RETURN_DELAY = 5
 FIGHT_BLEEDOUT = 5
 FIGHT_TIMEOUT = 90
 
@@ -44,6 +47,22 @@ def check_spec(spec, fight=False):
                 errors.append(f"{k} must be a number of seconds, at least 1")
         if spec.get('prompt') is not None and not (isinstance(spec['prompt'], str) and spec['prompt'].strip()):
             errors.append("prompt must be a non-empty string")
+        if spec.get('brute') not in (None, SPEAKER, PARTNER):
+            errors.append("brute must be 'speaker' or 'partner'")
+        for k in ('unarmed_damage', 'knockdown_force'):
+            v = spec.get(k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0):
+                errors.append(f"{k} must be a positive number")
+        sound = spec.get('knockdown_sound')
+        if sound is not None and not isinstance(sound, bool) and not (isinstance(sound, int) and sound > 0):
+            errors.append("knockdown_sound must be true, false or the form ID of a sound descriptor (SNDR)")
+        if spec.get('drop_shoes') is not None and not isinstance(spec['drop_shoes'], bool):
+            errors.append("drop_shoes must be true or false")
+        v = spec.get('shoes_return_delay')
+        if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
+            errors.append("shoes_return_delay must be a number of seconds, 0 or more")
+        if not spec.get('brute') and any(spec.get(k) is not None for k in ('knockdown_sound', 'drop_shoes')):
+            errors.append("knockdown_sound and drop_shoes need a brute")
     for k in ('scene_editor_id', 'quest_editor_id'):
         if not re.fullmatch(r'[A-Za-z0-9_]+', str(spec.get(k, ''))):
             errors.append(f"{k} is required (letters, digits and underscores)")
@@ -239,12 +258,49 @@ def unarm_code(var, tag):
              f"If {tag}g\n{var}.RemoveItem({tag}g, {var}.GetItemCount({tag}g), true, {tag}b)\nEndIf")
     return off, on, guard
 
-def fight_code(a, b_alias, timeout, scene_alias_prop, stop_on_player=True, unarmed=True, bleedout=5):
-    """Papyrus for a non-lethal fight between two quest aliases, ending in the after-fight scene (if any)."""
+def brute_code(brute, victim, damage, force, sound=True, shoes_delay=None):
+    """Papyrus for a fight where one fighter has boosted unarmed damage and every landed hit pushes the other away.
+    sound: play KdBoom0 (a Sound property) from the brute on each hit. shoes_delay: seconds after the fight, or None
+    to leave the footwear alone; when set the victim loses his shoes on a hit and gets them back that long after the
+    fight. Returns (setup, per-loop check, restore, final step run after the after-fight scene starts). The victim
+    is already essential and healed afterwards by the fight script, so the push never kills."""
+    setup = (f"float ud = {brute}.GetActorValue(\"UnarmedDamage\")\n{brute}.SetActorValue(\"UnarmedDamage\", {damage})\n"
+             f"float kdLast = {victim}.GetActorValuePercentage(\"Health\")")
+    if shoes_delay is not None:
+        setup += "\nObjectReference shoeRef = None\nArmor shoeBase = None"
+    check = (f"float kdNow = {victim}.GetActorValuePercentage(\"Health\")\n"
+             f"If kdNow < kdLast - 0.005 && {brute}.GetDistance({victim}) < 300.0\n"
+             f"{brute}.PushActorAway({victim}, {force})\n")
+    if shoes_delay is not None:
+        check += (f"Armor shoeWorn = {victim}.GetWornForm(0x00000080) as Armor\nIf shoeWorn\n"
+                  f"{victim}.UnequipItem(shoeWorn, false, true)\nshoeBase = shoeWorn\n"
+                  f"shoeRef = {victim}.DropObject(shoeWorn, 1)\nEndIf\n")
+    if sound:
+        check += f"If KdBoom0\nKdBoom0.Play({brute})\nEndIf\n"
+    check += "EndIf\nkdLast = kdNow"
+    restore = f"{brute}.SetActorValue(\"UnarmedDamage\", ud)"
+    after = ''
+    if shoes_delay is not None:
+        after = (f"If shoeBase\nUtility.Wait({float(shoes_delay)})\n"
+                 f"If shoeRef && shoeRef.Is3DLoaded() && {victim}.GetItemCount(shoeBase) == 0\n"
+                 f"{victim}.AddItem(shoeRef, 1, true)\nElseIf {victim}.GetItemCount(shoeBase) == 0\n"
+                 f"{victim}.AddItem(shoeBase, 1, true)\nEndIf\n{victim}.EquipItem(shoeBase, false, true)\nEndIf")
+    return setup, check, restore, after
+
+
+def fight_code(a, b_alias, timeout, scene_alias_prop, stop_on_player=True, unarmed=True, bleedout=5,
+               brute=None, damage=60, force=5.0, sound=True, shoes_delay=None):
+    """Papyrus for a non-lethal fight between two quest aliases, ending in the after-fight scene (if any).
+    brute: 'a' or 'b' to give that fighter boosted unarmed damage and a knockdown on every hit (see brute_code
+    for sound and shoes_delay)."""
     (off_a, on_a, g_a), (off_b, on_b, g_b) = unarm_code('fa', 'wa'), unarm_code('fb', 'wb')
     arm_off = f"{off_a}\n{off_b}" if unarmed else ''
     arm_on = f"{on_a}\n{on_b}" if unarmed else ''
     arm_guard = f"{g_a}\n{g_b}" if unarmed else ''
+    bru_setup = bru_check = bru_restore = bru_after = ''
+    if brute:
+        who, other = ('fa', 'fb') if brute == 'a' else ('fb', 'fa')
+        bru_setup, bru_check, bru_restore, bru_after = brute_code(who, other, damage, force, sound, shoes_delay)
     code = f"""
 Quest fq = FightQuest as Quest
 Actor fa = (fq.GetAlias({a}) as ReferenceAlias).GetActorReference()
@@ -259,6 +315,7 @@ fa.SetNoBleedoutRecovery(true)
 fb.SetNoBleedoutRecovery(true)
 Actor pl = Game.GetPlayer()
 {arm_off}
+{bru_setup}
 fa.StartCombat(fb)
 fb.StartCombat(fa)
 bool joined = false
@@ -267,6 +324,7 @@ While waited < {timeout} && !fa.IsBleedingOut() && !fb.IsBleedingOut() && !joine
 Utility.Wait(0.5)
 waited += 1
 {arm_guard}
+{bru_check}
 {'joined = fa.GetCombatTarget() == pl || fb.GetCombatTarget() == pl' if stop_on_player else ''}
 EndWhile
 fa.StopCombat()
@@ -289,9 +347,12 @@ fa.ResetHealthAndLimbs()
 fb.ResetHealthAndLimbs()
 ba.SetEssential(ea)
 bb.SetEssential(eb)
+{bru_restore}
 {arm_on}"""
     if scene_alias_prop:
         code += f"\nIf !joined\nScene after = {scene_alias_prop} as Scene\nafter.Start()\nEndIf"
+    if bru_after:
+        code += f"\n{bru_after}"
     return code
 
 
@@ -442,11 +503,28 @@ def add_npc_chat(b, spec, target_plugin, fight=False):
     if spec.get('once', True):
         opts['say_once'] = True
     if fight:
-        code = fight_code(alias[SPEAKER], alias[PARTNER],         spec.get('timeout', FIGHT_TIMEOUT) * 2,
-                                  'AfterScene' if scene else None, spec.get('stop_on_player', True), spec.get('unarmed', True),
-                          spec.get('bleedout', FIGHT_BLEEDOUT))
+        sound_id = spec.get('knockdown_sound', True)
+        sound_id = KNOCKDOWN_SOUND if sound_id is True else (sound_id or None)
+        shoes = spec.get('shoes_return_delay', SHOES_RETURN_DELAY) if spec.get('drop_shoes') else None
+        code = fight_code(alias[SPEAKER], alias[PARTNER], spec.get('timeout', FIGHT_TIMEOUT) * 2,
+                          'AfterScene' if scene else None, spec.get('stop_on_player', True), spec.get('unarmed', True),
+                          spec.get('bleedout', FIGHT_BLEEDOUT),
+                          {SPEAKER: 'a', PARTNER: 'b'}.get(spec.get('brute')), spec.get('unarmed_damage', 60),
+                          float(spec.get('knockdown_force', 5.0)), sound_id is not None, shoes)
         props = [('FightQuest', -quest_fid)] + ([('AfterScene', -scene.form_id.value)] if scene else [])
         opts['goodbye'] = True
+        if spec.get('brute') and sound_id is not None:
+            soun = target.find_own(f"{qid}Boom0", ['SOUN'])
+            if soun is None:
+                # a Papyrus Sound is a SOUN wrapper around the sound descriptor, not the descriptor itself
+                soun = Record('SOUN', FormID(b.own(new_id())), 0)
+                soun.add_subrecord('EDID', z(f"{qid}Boom0"))
+                soun.add_subrecord('OBND', bytes(12))
+                soun.add_subrecord('SDSC', struct.pack('<I', b.local(sound_id)))
+                plugin.add_record(soun)
+                made.append(b.describe(soun))
+            props.append(('KdBoom0', -soun.form_id.value, 'Sound'))
+            p.abs_ids.add(sound_id)
     else:
         code = "Scene chat = ChatScene as Scene\nchat.Start()"
         props = [('ChatScene', -scene.form_id.value)]

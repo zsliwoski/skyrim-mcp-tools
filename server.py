@@ -19,7 +19,8 @@ WRITE_TOOLS = {
     'add_follower_controls',
     'create_faction', 'create_package', 'write_npc_plugin', 'create_npc',
     'edit_npc', 'add_fetch_quest', 'add_kill_quest', 'add_plant_quest', 'add_radiant_quest', 'add_quest',
-    'clone_record', 'clone_records', 'create_cell', 'make_reference_persistent', 'snapshot_plugin',
+    'clone_record', 'clone_records', 'create_cell', 'copy_cell_navmesh', 'make_reference_persistent',
+    'snapshot_plugin',
     'restore_snapshot', 'install_plugin', 'edit_text', 'edit_condition', 'edit_script', 'edit_npc_face',
     'paint_npc_face', 'edit_record', 'package_plugin', 'place_item', 'edit_texts', 'edit_book',
     'create_enchantment', 'create_script_effect', 'enchant_item', 'create_spell', 'create_script',
@@ -605,7 +606,13 @@ def staged_fight(target_plugin: str, spec: dict, plugins: list[str] | None = Non
     spec is as for add_npc_chat (scene_editor_id, quest_editor_id, speaker, partner, trigger_line(s), once,
     conditions, dialogue_quest_editor_id) plus: prompt (a player topic on the speaker that starts the fight; leave
     out for an idle line instead, which defaults to hired=false), timeout (seconds before the fight is
-    called off, default 90), bleedout (seconds the loser stays down before they may get up, default 5), lines: [{who, text | player_text}] (the after-fight scene; optional).
+    called off, default 90), bleedout (seconds the loser stays down before they may get up, default 5), brute
+    ('speaker' or 'partner': that fighter gets boosted unarmed damage, unarmed_damage default 60, and every hit
+    pushes the other away (PushActorAway, knockdown_force default 5); the other is essential so never dies). Brute
+    extras: knockdown_sound (default true: a crash sound played from the brute on each hit; false for silence, or
+    the form ID of a sound descriptor (SNDR) to use another), drop_shoes (default false: on a hit the other fighter
+    is knocked out of his shoes, which he gets back shoes_return_delay seconds (default 5) after the fight ends),
+    lines: [{who, text | player_text}] (the after-fight scene; optional).
     The script makes both fighters essential for the fight, drops their weapons, has them fight each other until one
     enters bleedout (or the timeout), then stops combat, resets health and limbs, restores essential flags and
     weapons, and starts the after-fight scene. unarmed (default true) strips weapons and hand spells from both and
@@ -1559,19 +1566,41 @@ def create_spell_set(target_plugin: str, prefix: str, name: str, script_name: st
 
 @mcp.tool()
 def create_cell(target_plugin: str, editor_id: str, name: str | None = None, source: str | None = None,
-                can_travel: bool = True, copy_references: bool = True, plugins: list[str] | None = None) -> dict:
+                can_travel: bool = True, copy_references: bool = True, copy_navmesh: bool = True,
+                plugins: list[str] | None = None) -> dict:
     """Create a new interior cell in target_plugin, from scratch or by cloning an existing interior cell.
 
     source: editor ID, name or 8-digit form ID of an interior cell to clone (its lighting, music, location
     and other settings are copied). With copy_references (default) its placed objects are copied too, minus
-    actors, navmesh, door teleports and scripts. Without source a lit, empty cell is made and name is
+    actors, door teleports and scripts, and with copy_navmesh (default) so are its navmeshes, so NPCs can
+    path (no navmesh index entry is written). Without source a lit, empty cell is made and name is
     required. Text is written inline (the plugin must not be localized). The new cell can be used as
     placement.cell by NPC/quest tools. A snapshot is taken first.
     """
     from tools.cells.cell_create import create_cell as run
     try:
         _auto_snapshot(target_plugin, "pre_cell")
-        res = run(npc_builder(plugins), target_plugin, editor_id, name, source, can_travel, copy_references)
+        res = run(npc_builder(plugins), target_plugin, editor_id, name, source, can_travel, copy_references,
+                  copy_navmesh)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def copy_cell_navmesh(target_plugin: str, cell: str, source: str, plugins: list[str] | None = None) -> dict:
+    """Copy the navmeshes of an interior cell (e.g. WhiterunBreezehome) into a cell already in target_plugin.
+
+    For a cell made without navmesh (create_cell with copy_navmesh=false, or an older build), so NPCs there
+    can path. Same geometry only: the navmesh is the source's, so use it in a cell cloned from the source.
+    Door triangles are dropped; no navmesh index entry is written. Refuses a cell that already has a navmesh.
+    A snapshot is taken first; reinstall afterwards.
+    """
+    from tools.cells.cell_create import add_navmesh as run
+    try:
+        _auto_snapshot(target_plugin, "pre_navmesh")
+        res = run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, cell, source)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:

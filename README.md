@@ -100,7 +100,7 @@ what a plan needs, and see the `skyrim-skse-scripting` skill.
 - Splitting and refactoring plugins: `list_records`, `find_dependents` (what points at a group of records),
   `move_records` (move records to another plugin, renaming editor-ID prefixes and scripts) and `rename_script`
 - `place_item` (coordinates, or `near="<something in the cell>"` to pick a free spot beside it), `place_items`
-  (several items on free floor spots), `find_free_spots`, `create_cell`, `make_reference_persistent`;
+  (several items on free floor spots), `find_free_spots`, `create_cell`, `copy_cell_navmesh`, `make_reference_persistent`;
   `get_cell_contents` takes `x`, `y`, `radius` to list the nearest objects. `search_cells`, `get_cell_contents`
   and `find_free_spots` take `target_plugin` to include the plugin you are authoring
   (`list_records(plugin, signature="CELL")` lists its cells)

@@ -127,6 +127,33 @@ class TestQuests:
             "scene_editor_id": "TestBrawl2"})
         assert "error" not in res, res
 
+    def test_staged_fight_brute_wraps_sound_in_soun_and_binds_property(self, npc_plugin):
+        from esplib import Plugin
+        spec = {"scene_editor_id": "TestBrute", "quest_editor_id": "TestBruteQuest", "speaker": "TestSven",
+                "partner": "Lydia", "prompt": "Show him.", "trigger_line": "Hold still.", "brute": "speaker",
+                "lines": [{"who": "partner", "text": "Ow."}]}
+        res = server.staged_fight("TestMod.esp", spec)
+        assert "error" not in res, res
+        plug = Plugin(str(npc_plugin))
+        souns = [r for r in plug.records if r.signature == "SOUN"]
+        assert [r.editor_id for r in souns] == ["TestBruteQuestBoom0"]
+        assert souns[0].get_subrecord("SDSC") is not None
+        info = next(r for r in plug.records if r.signature == "INFO" and r.get_subrecord("VMAD") is not None
+                    and b"KdBoom0" in bytes(r.get_subrecord("VMAD").data))
+        assert bytes(info.get_subrecord("VMAD").data).count(b"KdBoom0") == 1
+        # a rebuild reuses the wrapper instead of adding another
+        assert "error" not in server.staged_fight("TestMod.esp", spec, replace="TestBrute")
+        assert sum(1 for r in Plugin(str(npc_plugin)).records if r.signature == "SOUN") == 1
+
+    def test_staged_fight_brute_extras_are_optional(self, npc_plugin):
+        from esplib import Plugin
+        spec = {"scene_editor_id": "TestQuiet", "quest_editor_id": "TestQuietQuest", "speaker": "TestSven",
+                "partner": "Lydia", "prompt": "Quietly.", "trigger_line": "Down you go.", "brute": "speaker",
+                "knockdown_sound": False, "drop_shoes": True, "shoes_return_delay": 2}
+        res = server.staged_fight("TestMod.esp", spec)
+        assert "error" not in res, res  # the fragment compiles with the shoe code and no sound property
+        assert not any(r.signature == "SOUN" for r in Plugin(str(npc_plugin)).records)
+
     def test_remove_chat_and_replace_rebuild_a_fight(self, npc_plugin):
         from esplib import Plugin
         spec = {"scene_editor_id": "TestBrawl", "quest_editor_id": "TestBrawlQuest", "speaker": "TestSven",

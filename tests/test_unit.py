@@ -23,7 +23,7 @@ EXPECTED_TOOLS = {
     "add_kill_quest", "add_plant_quest", "add_quest", "clone_record", "snapshot_plugin", "list_snapshots",
     "restore_snapshot", "install_plugin", "validate_plugin", "quest_console_commands", "make_reference_persistent",
     "list_texts", "edit_text", "edit_texts", "audit_dialogue_length", "list_book_models", "read_book", "edit_book", "lint_text", "list_conditions", "edit_condition", "edit_script", "diff_plugin",
-    "audit_plugin", "audit_voice", "create_talking_object", "create_cell", "add_radiant_quest", "clone_records", "place_item", "get_cell_contents",
+    "audit_plugin", "audit_voice", "create_talking_object", "create_cell", "copy_cell_navmesh", "add_radiant_quest", "clone_records", "place_item", "get_cell_contents",
         "create_enchantment", "create_script_effect", "enchant_item", "create_spell", "create_script",
         "create_shader", "create_unique_item", "deploy_plugin", "item_console_commands",
         "diff_records", "copy_subrecords", "drop_conditions", "remove_records", "create_scroll",
@@ -270,6 +270,39 @@ class TestNpcChat:
         assert any("who" in e for e in check_spec(self.spec(lines=[{"who": "x", "text": "a"}])))
         assert any("unknown key" in e for e in check_spec(self.spec(bogus=1)))
         assert any("scene_editor_id" in e for e in check_spec(self.spec(scene_editor_id="a b")))
+
+    def test_brute_options_are_validated_for_fights_only(self):
+        from tools.quests.chat_builder import check_spec
+        assert check_spec(self.spec(brute="speaker", unarmed_damage=80, knockdown_force=3), fight=True) == []
+        assert any("brute" in e for e in check_spec(self.spec(brute="victim"), fight=True))
+        assert any("unarmed_damage" in e for e in check_spec(self.spec(unarmed_damage=0), fight=True))
+        assert any("knockdown_force" in e for e in check_spec(self.spec(knockdown_force="big"), fight=True))
+        assert any("unknown key" in e for e in check_spec(self.spec(brute="speaker")))
+        ok = dict(brute="speaker", knockdown_sound=False, drop_shoes=True, shoes_return_delay=0)
+        assert check_spec(self.spec(**ok), fight=True) == []
+        assert check_spec(self.spec(brute="speaker", knockdown_sound=0xFD989), fight=True) == []
+        assert any("knockdown_sound" in e for e in check_spec(self.spec(brute="speaker", knockdown_sound="x"), fight=True))
+        assert any("shoes_return_delay" in e for e in check_spec(self.spec(brute="speaker", shoes_return_delay=-1), fight=True))
+        assert any("need a brute" in e for e in check_spec(self.spec(drop_shoes=True), fight=True))
+
+    def test_brute_code_pushes_victim_and_plays_sound_on_brute(self):
+        from tools.quests.chat_builder import brute_code, fight_code
+        setup, check, restore, after = brute_code("fa", "fb", 75, 6.0)
+        assert 'fa.SetActorValue("UnarmedDamage", 75)' in setup
+        assert "fa.PushActorAway(fb, 6.0)" in check and "KdBoom0.Play(fa)" in check
+        assert "shoe" not in check and after == ""
+        assert 'fa.SetActorValue("UnarmedDamage", ud)' == restore
+        assert "KdBoom0" not in brute_code("fa", "fb", 75, 6.0, sound=False)[1]
+        assert "PushActorAway" in fight_code("a", "b", 60, None, brute="a")
+        assert "PushActorAway" not in fight_code("a", "b", 60, None)
+
+    def test_brute_shoes_are_dropped_on_hit_and_returned_after_the_fight(self):
+        from tools.quests.chat_builder import brute_code, fight_code
+        setup, check, restore, after = brute_code("fa", "fb", 60, 5.0, shoes_delay=3)
+        assert "fb.DropObject(shoeWorn, 1)" in check and "ObjectReference shoeRef" in setup
+        assert "Utility.Wait(3.0)" in after and "fb.EquipItem(shoeBase" in after
+        code = fight_code("a", "b", 60, "AfterScene", brute="a", shoes_delay=3)
+        assert code.index("after.Start()") < code.index("Utility.Wait(3.0)")
 
     def test_scene_has_one_phase_per_line_and_links_actions_to_topics(self):
         import struct

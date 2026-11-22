@@ -96,6 +96,9 @@ def test_alias_flags_location_and_external(npc_plugin):
     blocks = alias_blocks(quest(npc_plugin, "TestQ"))
     assert blocks[1]['start'] == 'ALLS' and 'ALFL' in dict(blocks[1]['subs'])
     assert [n for n, _ in blocks[2]['subs']][2:4] == ['ALEQ', 'ALEA']
+    assert [n for n, _ in blocks[2]['subs']][-2:] == ['VTCK', 'ALED']
+    assert "error" not in server.add_quest_objective("TestQ", "TestMod.esp", 20, "stay", targets=["Town"])
+    assert not [e for e in server.validate_plugin("TestMod.esp")["errors"] if "TestQ" in e]
     assert "error" in server.add_quest_alias("TestQ", "TestMod.esp", "Bad", npc="Lydia", location="Whiterun")
     assert "error" in server.add_quest_alias("TestQ", "TestMod.esp", "Bad2", npc="Lydia", flags=["nope"])
 

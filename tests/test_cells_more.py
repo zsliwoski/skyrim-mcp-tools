@@ -30,6 +30,23 @@ def test_default_xcll_size():
     assert len(cell_create.default_xcll()) == 92
 
 
+def test_remap_navmesh_reparents_and_keeps_copied_doors():
+    import struct
+    head = struct.pack('<IIII', 12, 0xA5E9A03C, 0, 0x165A8)
+    body = (struct.pack('<I', 1) + bytes(12) + struct.pack('<I', 1) + bytes(16)
+            + struct.pack('<I', 1) + struct.pack('<IIH', 1, 0xAAA, 0)
+            + struct.pack('<I', 2) + struct.pack('<HII', 0, 7, 0x111) + struct.pack('<HII', 1, 8, 0x222)
+            + struct.pack('<I', 0))
+    out = cell_create.remap_navmesh(head + body, 0x800, {0x111: 0x900}, {0xAAA: 0xBBB})
+    assert struct.unpack_from('<I', out, 12)[0] == 0x800
+    o = 16 + 4 + 12 + 4 + 16
+    assert struct.unpack_from('<IIH', out, o + 4) == (1, 0xBBB, 0)
+    o += 4 + 10
+    assert struct.unpack_from('<I', out, o)[0] == 1
+    assert struct.unpack_from('<HII', out, o + 4) == (0, 7, 0x900)
+    assert struct.unpack_from('<I', out, o + 14)[0] == 0
+
+
 def test_interior_group_reuses_nesting():
     plugin = Plugin.new_plugin("x.esp", masters=[], game="tes5")
     a = cell_create.interior_group(plugin, 0x000812)

@@ -218,7 +218,7 @@ def validate(path, data_dir=None):
         alias_ids, objectives, targets = set(), set(), set()
         for s in q.subrecords:
             d = bytes(s.data)
-            if s.signature == 'ALST' and len(d) >= 4:
+            if s.signature in ('ALST', 'ALLS') and len(d) >= 4:
                 alias_ids.add(struct.unpack('<I', d[:4])[0])
             elif s.signature == 'QOBJ' and len(d) >= 2:
                 objectives.add(struct.unpack('<H', d[:2])[0])

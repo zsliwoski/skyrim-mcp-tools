@@ -1933,9 +1933,9 @@ class NpcBuilder:
             def attach_script(rec, script=script):
                 code, props = script
                 sname = script_name(plugin.file_path.name, 'TIF', rec.form_id.value & 0xFFFFFF)
-                pex = compile_script(sname, tif_source(sname, code, [(n_, 'Form') for n_, _ in props]),
+                pex = compile_script(sname, tif_source(sname, code, [(pr[0], pr[2] if len(pr) > 2 else 'Form') for pr in props]),
                                      plugin.file_path.parent / 'Scripts')
-                rec.add_subrecord('VMAD', info_vmad(sname, [(n_, self.lid(f)) for n_, f in props]))
+                rec.add_subrecord('VMAD', info_vmad(sname, [(pr[0], self.lid(pr[1])) for pr in props]))
                 rec.subrecords.insert(0, rec.subrecords.pop())
                 made.append({'type': 'script', 'editor_id': sname, 'object_id': str(pex)})
             if variants:
