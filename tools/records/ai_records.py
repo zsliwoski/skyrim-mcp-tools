@@ -43,7 +43,21 @@ def make_formlist(fid, editor_id, members):
     return rec
 
 
-def clone_package(donor, fid, editor_id, conditions=(), radii=None, combat_style=None, leash=None):
+def schedule_bytes(hour, duration, days=None):
+    """PSDT: month any, day of week (-1 any, 0 Sunday .. 6 Saturday), date 0, start hour/minute, duration stored
+    in minutes (vanilla DefaultEatEvening19x1 holds 60 for one hour)."""
+    hour = float(hour)
+    if not 0 <= hour < 24:
+        raise ValueError("start hour must be from 0 up to 24")
+    if not 1 <= int(duration) <= 24:
+        raise ValueError("duration must be 1 to 24 hours")
+    dow = -1 if days is None else int(days)
+    if not -1 <= dow <= 6:
+        raise ValueError("day must be 0 (Sunday) to 6 (Saturday)")
+    return struct.pack('<bbBbb3xi', -1, dow, 0, int(hour), int(round((hour % 1) * 60)), int(duration) * 60)
+
+
+def clone_package(donor, fid, editor_id, conditions=(), radii=None, combat_style=None, leash=None, schedule=None):
     """PACK copied from donor with a new editor ID, extra conditions (CTDA bytes), the first float parameters
     replaced by radii, an optional combat style form ID (local) written before the data inputs, and the location
     radius set to `leash` (for the combat-override donor).
@@ -72,6 +86,11 @@ def clone_package(donor, fid, editor_id, conditions=(), radii=None, combat_style
             raise ValueError("package has no location (PLDT) to apply a leash radius to")
         kind, ref, _ = struct.unpack('<iIi', subs[at][1])
         subs[at] = ('PLDT', struct.pack('<iIi', kind, ref, int(leash)))
+    if schedule is not None:
+        at = next((i for i, (sig, _) in enumerate(subs) if sig == 'PSDT'), None)
+        if at is None:
+            raise ValueError("package has no schedule (PSDT) to change")
+        subs[at] = ('PSDT', schedule)
     rec.add_subrecord('EDID', z(editor_id))
     for sig, data in subs:
         rec.add_subrecord(sig, data)
@@ -138,7 +157,7 @@ def resolve_late(b, conds):
 
 
 def create_package(b, target_plugin, editor_id, donor=DONOR_FOLLOW_PACKAGE, conditions=None, radii=None,
-                   combat_style=None):
+                   combat_style=None, schedule=None):
     """Clone a vanilla AI package into target_plugin, gated by extra conditions.
 
     donor: package editor ID or form ID (default PlayerFollowerPackage, a Follow package). conditions: as for
@@ -164,9 +183,39 @@ def create_package(b, target_plugin, editor_id, donor=DONOR_FOLLOW_PACKAGE, cond
     b.add_masters(plugin, p)
     oid = _next_id(b, plugin)
     rec = clone_package(donor_rec, b.own(oid), editor_id, resolve_late(b, conds), radii,
-                        b.local(style) if style else None)
+                        b.local(style) if style else None, schedule=schedule)
     plugin.add_record(rec)
     plugin.header.next_object_id = oid + 1
     target.save()
     return {'path': str(path), 'record': b.describe(rec), 'donor': donor_rec.editor_id,
             'masters': list(plugin.header.masters)}
+
+
+SCHEDULE_DONORS = {'sandbox': 'DefaultSandboxCurrentLocation1024', 'sleep': 'DefaultSleepPackageAnyTime',
+                   'eat': 'DefaultEatMorning7x1'}
+
+
+def set_npc_schedule(b, target_plugin, npc, entries, prefix=None, refresh=None):
+    """Give an NPC a daily routine: one cloned package per entry, each active for a window of the day.
+
+    entries: [{activity or donor, start (hour 0-24, e.g. 21.5), hours (1-24), day?}]. activity is one of
+    sandbox/sleep/eat (vanilla default packages), or donor names any Skyrim.esm package instead. The new packages are appended to the NPC's package list in order.
+    """
+    if not entries or not isinstance(entries, list):
+        raise ValueError("entries must be a non-empty list of {activity, start, hours}")
+    prefix = prefix or f"{npc}Sched"
+    made, names = [], []
+    for n, e in enumerate(entries, 1):
+        donor = e.get('donor') or SCHEDULE_DONORS.get(e.get('activity'))
+        if not donor:
+            raise ValueError(f"entries[{n - 1}]: give donor or activity {list(SCHEDULE_DONORS)}")
+        if 'start' not in e or 'hours' not in e:
+            raise ValueError(f"entries[{n - 1}]: needs start and hours")
+        sched = schedule_bytes(e['start'], e['hours'], e.get('day'))
+        eid = f"{prefix}{n}"
+        res = create_package(b, target_plugin, eid, donor, schedule=sched)
+        made.append(res['record'])
+        names.append(eid)
+    b = refresh() if refresh else b
+    out = b.edit_npc(npc, {'add_packages': names}, target_plugin)
+    return {'packages': made, 'npc': out}

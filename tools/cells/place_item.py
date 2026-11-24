@@ -22,23 +22,27 @@ def base_charge(rec):
 
 
 def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=None, persistent=False,
-               editor_id=None, rotation_x=0.0, rotation_y=0.0, charge=None):
+               editor_id=None, rotation_x=0.0, rotation_y=0.0, charge=None, worldspace=None, grid_x=None,
+               grid_y=None, kinds=None, extra=None):
     """Add a REFR for `base` to `cell` inside target_plugin (the file must already exist).
 
     An enchanted weapon placed without XCHG spawns with no charge, so charge defaults to the weapon's full
     charge (its EAMT); pass a number to override. rotation_x/y (degrees) tilt the item, e.g. 90 lays a dagger flat.
+    For an exterior cell give worldspace with grid_x/grid_y instead of a cell name. kinds limits the base
+    record types (default: everything placeable).
     """
+    kinds = kinds or PLACEABLE
     path = resolve_target_path(target_plugin, b.output_dir, b.data_dir)
     target = Target(b.m, b.names, path, create=False)
     plugin = target.plugin
     own_id = None
-    own = target.find_own(base, PLACEABLE)
+    own = target.find_own(base, kinds)
     if own is not None:
         own_id = own.form_id.value & 0xFFFFFF
         fid = 0
         base_rec = own
     else:
-        fid, base_rec = b.resolver.lookup(base, PLACEABLE)
+        fid, base_rec = b.resolver.lookup(base, kinds)
     if charge is None:
         charge = base_charge(base_rec)
     elif charge < 0:
@@ -47,7 +51,7 @@ def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=
         raise ValueError("scale must be between 0.1 and 10")
 
     p = Plan()
-    p.cell = b.cells.find(cell)
+    p.cell = b.cells.find(cell, worldspace, grid_x, grid_y)
     if fid:
         p.abs_ids.add(fid)
     b.target, b.plugin = target, plugin
@@ -61,6 +65,8 @@ def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=
     if editor_id:
         ref.add_subrecord('EDID', z(editor_id))
     ref.add_subrecord('NAME', fid_bytes(base_local))
+    for sig, data in extra or []:
+        ref.add_subrecord(sig, data)
     if charge is not None:
         ref.add_subrecord('XCHG', struct.pack('<f', float(charge)))
     if scale is not None:

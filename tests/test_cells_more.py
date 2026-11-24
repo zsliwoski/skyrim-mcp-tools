@@ -91,6 +91,79 @@ def test_clone_cell_copies_references(plugin_with_hall):
     assert "HallClone" in sigs(plugin_with_hall)["CELL"]
 
 
+def test_link_cells_points_each_door_at_the_other(plugin_with_hall):
+    import math
+    import struct
+    assert "error" not in server.create_cell("Cells.esp", "HallB", "Hall B")
+    _fresh()
+    res = server.link_cells("Cells.esp", "Hall", {"cell": "HallA", "x": 0, "y": 0, "z": 0, "rotation_z": 90},
+                            {"cell": "HallB", "x": 500, "y": 0, "z": 10, "rotation_z": 0},
+                            plugins=["Skyrim.esm", str(plugin_with_hall)])
+    assert "error" not in res, res
+    _fresh()
+    refs = {r.editor_id: r for r in Plugin.load(str(plugin_with_hall)).records if r.editor_id}
+    for src, dst in (("HallDoorA", "HallDoorB"), ("HallDoorB", "HallDoorA")):
+        data = bytes(refs[src].get_subrecord('XTEL').data)
+        assert len(data) == 32
+        assert struct.unpack_from('<I', data)[0] == refs[dst].form_id.value
+    x, y, z, _, _, rz, _ = struct.unpack_from('<3f3fI', bytes(refs["HallDoorA"].get_subrecord('XTEL').data), 4)[:7]
+    assert (round(x), round(y), round(z)) == (500, -80, 10) and abs(rz - math.pi) < 1e-5
+
+
+def test_link_cells_rejects_missing_position(plugin_with_hall):
+    assert "x, y and z" in server.link_cells("Cells.esp", "P", {"cell": "HallA"}, {"cell": "HallA"})["error"]
+
+
+def test_location_assigns_cell_and_marker_links_back(plugin_with_hall):
+    import struct
+    res = server.create_location("Cells.esp", "HallLoc", "Hall of Tests", keywords=["LocTypeDungeon"],
+                                 cells=["HallA"], plugins=["Skyrim.esm", str(plugin_with_hall)])
+    assert "error" not in res, res
+    _fresh()
+    mark = server.add_map_marker("Cells.esp", "HallMarker", "Hall of Tests", 10, 20, 30, grid_x=4, grid_y=-11,
+                                 marker_type="dwemer_ruin", visible=False, location="HallLoc",
+                                 plugins=["Skyrim.esm", str(plugin_with_hall)])
+    assert "error" not in mark, mark
+    _fresh()
+    plug = Plugin.load(str(plugin_with_hall))
+    recs = {r.editor_id: r for r in plug.records if r.editor_id}
+    loc = recs["HallLoc"]
+    assert loc.get_subrecord('FULL').data.rstrip(b'\0') == b"Hall of Tests"
+    assert struct.unpack_from('<I', bytes(recs["HallA"].get_subrecord('XLCN').data))[0] == loc.form_id.value
+    from tools.records.maintenance import all_records
+    ref = next(r for r in all_records(plug) if r.editor_id == "HallMarker")
+    assert int(ref.flags) & 0x400 and bytes(ref.get_subrecord('TNAM').data) == bytes([8, 0])
+    assert bytes(ref.get_subrecord('FNAM').data) == bytes([2])
+    assert struct.unpack_from('<I', bytes(loc.get_subrecord('MNAM').data))[0] == ref.form_id.value
+
+
+def test_location_rejects_cell_outside_plugin(plugin_with_hall):
+    res = server.create_location("Cells.esp", "BadLoc", "Bad", cells=["Nowhere"])
+    assert "not in Cells.esp" in res["error"]
+
+
+def test_edit_reference_moves_and_disables_vanilla_ref(plugin_with_hall):
+    import struct
+    from tools.records.maintenance import all_records
+    res = server.edit_reference(REF_ID, "Cells.esp", disable=True, x=111, z=5, rotation_z=90, scale=2,
+                                plugins=["Skyrim.esm", str(plugin_with_hall)])
+    assert "error" not in res, res
+    assert res["disabled"] and res["position"]["x"] == 111
+    _fresh()
+    ref = next(r for r in all_records(Plugin.load(str(plugin_with_hall))) if r.signature == 'REFR'
+               and (r.form_id.value & 0xFFFFFF) == int(REF_ID, 16))
+    assert int(ref.flags) & 0x800
+    x, y, z_, _, _, rz = struct.unpack('<6f', bytes(ref.get_subrecord('DATA').data))
+    assert (x, z_) == (111, 5) and abs(rz - 1.5708) < 1e-3
+    assert struct.unpack('<f', bytes(ref.get_subrecord('XSCL').data))[0] == 2
+    again = server.edit_reference(REF_ID, "Cells.esp", disable=False, plugins=["Skyrim.esm", str(plugin_with_hall)])
+    assert not again["disabled"] and again["position"]["x"] == 111
+
+
+def test_edit_reference_needs_a_change(plugin_with_hall):
+    assert "nothing to change" in server.edit_reference(REF_ID, "Cells.esp")["error"]
+
+
 def test_clone_exterior_cell_rejected(plugin_with_hall):
     res = server.create_cell("Cells.esp", "HallExt", "Ext", source="(4,-11)")
     assert "error" in res

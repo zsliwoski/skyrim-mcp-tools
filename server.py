@@ -27,6 +27,11 @@ WRITE_TOOLS = {
     'create_shader', 'create_unique_item', 'deploy_plugin', 'copy_subrecords', 'remove_records',
     'drop_conditions', 'create_scroll', 'create_spell_tome', 'place_items', 'create_spell_set',
     'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item', 'build_lore_db', 'build_api_db',
+    'link_cells', 'create_location', 'add_map_marker', 'edit_reference', 'create_container',
+    'create_global', 'create_weapon', 'create_armor', 'set_npc_schedule', 'create_message', 'create_activator', 'create_light', 'create_sound', 'create_perk',
+    'create_music',
+    'create_leveled_list', 'add_to_leveled_list', 'create_outfit', 'create_recipe',
+    'duplicate_assets', 'create_voice_type', 'assign_voice_type', 'import_voice_audio',
 }
 _write_lock = threading.RLock()
 _register_tool = mcp.tool
@@ -286,6 +291,60 @@ def detect_skse() -> dict:
     from tools.papyrus.skse import detect_skse as detect
     return detect(DATA_DIR, OUTPUT_DIR,
                   [SOURCE_CACHE / "Scripts" / "Source"] + skse_source_dirs(DATA_DIR))
+
+
+@mcp.tool()
+def inspect_save(plugin: str = "", save: str = "", quest: str = "", list_saves: bool = False) -> dict:
+    """Check a Skyrim SE save for a plugin you authored, without changing anything.
+
+    Reports whether the plugin was in the load order when the save was made and, for each of its quests, whether
+    the save holds state for it, the stages it has reached and the stage indexes the plugin defines. Use it
+    after install_plugin to tell "plugin not loaded", "quest never started" and "form IDs changed, make a new
+    save" apart. `save` is a file name in the saves folder (default: the newest); `quest` filters by editor ID
+    substring; `list_saves` lists recent saves instead. The folder is Documents\\My Games\\Skyrim Special Edition\\
+    Saves, or set SKYRIM_SAVES_DIR. Quest state is only stored once a quest has changed from its initial state.
+    """
+    from tools.records import save_inspect as si
+    folder = si.find_save_dir(si.default_save_dirs())
+    if folder is None:
+        return {"error": "Saves folder not found; set SKYRIM_SAVES_DIR",
+                "searched": [str(d) for d in si.default_save_dirs()]}
+    if list_saves or not plugin:
+        return {"folder": str(folder), "saves": si.list_saves(folder)}
+    from tools.records.save_file import SaveError, find_saves
+    path = folder / save if save else next(iter(find_saves(folder)), None)
+    if path is None or not path.is_file():
+        return {"error": f"save {save or '(any)'} not found in {folder}"}
+    try:
+        return si.inspect_plugin_in_save(_out_path(plugin), path, quest or None)
+    except (SaveError, ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def read_papyrus_log(filter: str = "", level: str = "", log: int = 0, tail_lines: int = 20000,
+                     max_groups: int = 40, list_logs: bool = False) -> dict:
+    """Read Skyrim's Papyrus runtime log to see what failed in game, without changing anything.
+
+    Repeated lines are folded into groups with a count, first/last time and an example stack, and common causes
+    (empty property or alias, missing .pex, wrong cast) get a hint. `filter` is a case-insensitive substring
+    matched against the message and stack (use a script or plugin name); `level` is error, warning or info and
+    keeps that level and anything more severe; `log` 0 is the current session (Papyrus.0.log), 1 the previous.
+    `list_logs` lists the files in the log folder instead. The folder is found under Documents\\My Games\\Skyrim
+    Special Edition\\Logs\\Script, or set SKYRIM_LOG_DIR. Logging is off by default in the game: enable
+    bEnableLogging and bEnableTrace under [Papyrus] in SkyrimCustom.ini.
+    """
+    from tools.papyrus import papyrus_log as pl
+    log_dir = pl.find_log_dir(pl.default_log_dirs())
+    if log_dir is None:
+        return {"error": "Papyrus log folder not found; set SKYRIM_LOG_DIR to the folder holding Papyrus.0.log",
+                "searched": [str(d) for d in pl.default_log_dirs()]}
+    if list_logs:
+        return {"folder": str(log_dir), "logs": pl.list_logs(log_dir)}
+    try:
+        return pl.read_log(log_dir, filter or None, level or None, log, tail_lines, max_groups)
+    except (FileNotFoundError, ValueError) as e:
+        return {"error": str(e), "folder": str(log_dir)}
 
 
 OUTPUT_DIR = Path(os.environ.get("SKYRIM_OUTPUT_DIR", Path(__file__).resolve().parent / "output"))
@@ -1586,6 +1645,327 @@ def create_cell(target_plugin: str, editor_id: str, name: str | None = None, sou
         return res
     except (ValueError, FileNotFoundError) as e:
         return {"error": str(e)}
+
+
+@mcp.tool()
+def link_cells(target_plugin: str, prefix: str, a: dict, b: dict, door: str = "house", door_b: str | None = None,
+               plugins: list[str] | None = None) -> dict:
+    """Connect two cells with a pair of load doors so a custom interior can be entered and left without the console.
+
+    a and b each: {"cell": editor ID or name, "x", "y", "z", "rotation_z"} in game units and degrees; for an
+    exterior cell give "worldspace", "grid_x", "grid_y" instead of "cell". The door faces along rotation_z.
+    The doors are named <prefix>DoorA and <prefix>DoorB. door/door_b: a preset (house, house_interior, shack,
+    farmhouse, nordic, nordic_iron, dwemer, mine, cave, orc, passage) or any DOOR editor ID; door_b defaults to
+    door. Each door teleports to a point about 80 units behind the other, facing away, as vanilla does. Use
+    get_cell_contents / find_free_spots / search_references to choose coordinates. A snapshot is taken first;
+    reinstall afterwards. NPCs only path through if the navmeshes are linked.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_link_cells")
+        from tools.cells.door_link import link_cells as run
+        return run(_refresher(plugins, target_plugin), target_plugin, prefix, a, b, door, door_b)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+@mcp.tool()
+def create_location(target_plugin: str, editor_id: str, name: str, parent: str | None = None,
+                    keywords: list[str] | None = None, cells: list[str] | None = None,
+                    radius: float | None = None, plugins: list[str] | None = None) -> dict:
+    """Create a location (LCTN) so a place has a name, shows the "discovered" banner and can be a quest target.
+
+    parent: a location editor ID (e.g. WhiterunLocation). keywords: LocType keywords such as LocTypeDungeon,
+    LocTypeInn, LocTypeHabitation. cells: editor IDs of cells already in target_plugin to assign to it. A
+    snapshot is taken first. Pair with add_map_marker for a world-map icon.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_location")
+        from tools.cells.location import create_location as run
+        return run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, editor_id, name, parent,
+                   keywords, cells, radius)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+@mcp.tool()
+def add_map_marker(target_plugin: str, editor_id: str, name: str, x: float, y: float, z: float,
+                   worldspace: str = "Tamriel", grid_x: int | None = None, grid_y: int | None = None,
+                   marker_type: str = "landmark", visible: bool = True, can_travel: bool = True,
+                   location: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Put a named world-map marker at a position in an exterior cell.
+
+    grid_x/grid_y: the exterior cell (use search_cells or search_references to find the grid). marker_type: city,
+    town, settlement, cave, camp, fort, nordic_ruin, dwemer_ruin, shipwreck, grove, landmark, dragon_lair, farm,
+    wood_mill, mine, imperial_camp, stormcloak_camp, doomstone, wheat_mill, smelter, stable, imperial_tower,
+    clearing, pass, altar, rock, lighthouse, orc_stronghold, giant_camp, shack, nordic_tower, nordic_dwelling,
+    docks, shrine (or a number). visible shows it before discovery; can_travel allows fast travel to it.
+    location: an LCTN already in target_plugin to use this as its world marker. A snapshot is taken first.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_map_marker")
+        from tools.cells.location import add_map_marker as run
+        return run(_refresher(plugins, target_plugin), target_plugin, editor_id, name, x, y, z, marker_type,
+                   None, worldspace, grid_x, grid_y, visible, can_travel, location)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+@mcp.tool()
+def edit_reference(reference: str, target_plugin: str, disable: bool | None = None, x: float | None = None,
+                   y: float | None = None, z: float | None = None, rotation_x: float | None = None,
+                   rotation_y: float | None = None, rotation_z: float | None = None, scale: float | None = None,
+                   persistent: bool | None = None, worldspace: str = "Tamriel",
+                   plugins: list[str] | None = None) -> dict:
+    """Change an object already placed in the world by an official plugin: disable it, move, rotate or scale it.
+
+    reference: the hex reference ID from search_references or get_cell_contents. Changes are written as an
+    override in target_plugin; only the fields you give change (rotations in degrees, positions in game units,
+    disable=false re-enables). Use this to clear a table for a custom NPC or move a vanilla prop. persistent
+    makes the reference persistent. worldspace is used only for unnamed exterior cells. A snapshot is taken first.
+    """
+    try:
+        _auto_snapshot(target_plugin, "pre_edit_reference")
+        from tools.cells.edit_reference import edit_reference as run
+        return run(_cell_builder(plugins, target_plugin), reference, target_plugin, disable, x, y, z, rotation_x,
+                   rotation_y, rotation_z, scale, persistent, worldspace)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+def _record_tool(label, target_plugin, plugins, name, *args, module="loot_records"):
+    """Run a tools.records function (loot_records by default) with a snapshot first and the usual error handling."""
+    try:
+        _auto_snapshot(target_plugin, f"pre_{label}")
+        import importlib
+        mod = importlib.import_module(f"tools.records.{module}")
+        return getattr(mod, name)(npc_builder(_with_target(plugins, target_plugin)), target_plugin, *args)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+@mcp.tool()
+def create_container(target_plugin: str, editor_id: str, name: str, items: list[dict] | None = None,
+                     model: str = "Clutter\\Containers\\Chest01\\Chest01.nif", respawns: bool = False,
+                     weight: float = 0.0, plugins: list[str] | None = None) -> dict:
+    """Create a container (chest, barrel, sack) with starting contents, ready to place with place_item.
+
+    items: [{"item": editor ID/name/form ID (an item or a leveled list), "count": 1}]. model: a nif path under
+    Meshes (default a wooden chest). respawns: contents refill like a vanilla loot chest. Use edit_record to
+    adjust it afterwards.
+    """
+    return _record_tool("container", target_plugin, plugins, "create_container", editor_id, name, items, model,
+                        respawns, weight)
+
+
+@mcp.tool()
+def create_leveled_list(target_plugin: str, editor_id: str, entries: list[dict], kind: str = "item",
+                        chance_none: int = 0, calc_all_levels: bool = False, calc_each: bool = True,
+                        use_all: bool = False, plugins: list[str] | None = None) -> dict:
+    """Create a leveled list: random loot (item), random actors (npc) or spells (spell) that scale with player level.
+
+    entries: [{"form": editor ID/form ID, "level": 1, "count": 1}]. chance_none: percent chance of nothing.
+    calc_each rolls separately for each item in a count; use_all gives every entry. Use it in a container, an
+    outfit, NPC death item, or add_to_leveled_list.
+    """
+    return _record_tool("leveled_list", target_plugin, plugins, "create_leveled_list", editor_id, entries, kind,
+                        chance_none, calc_all_levels, calc_each, use_all)
+
+
+@mcp.tool()
+def add_to_leveled_list(target_plugin: str, leveled_list: str, entries: list[dict],
+                        plugins: list[str] | None = None) -> dict:
+    """Add entries ({"form", "level", "count"}) to a leveled list, such as a vanilla loot or NPC list.
+
+    A list from an official plugin is overridden in target_plugin, so other mods adding to it conflict
+    (last loaded wins).
+    """
+    return _record_tool("add_to_list", target_plugin, plugins, "add_to_leveled_list", leveled_list, entries)
+
+
+@mcp.tool()
+def create_outfit(target_plugin: str, editor_id: str, items: list[str],
+                  plugins: list[str] | None = None) -> dict:
+    """Create an outfit (OTFT) from armor and leveled-item identifiers; assign it to an NPC's default outfit
+    (DOFT) with edit_record."""
+    return _record_tool("outfit", target_plugin, plugins, "create_outfit", editor_id, items)
+
+
+@mcp.tool()
+def create_recipe(target_plugin: str, editor_id: str, result: str, ingredients: list[dict],
+                  station: str | None = None, count: int = 1, temper: bool = False,
+                  conditions: list[dict] | None = None, plugins: list[str] | None = None) -> dict:
+    """Create a crafting recipe (COBJ), or with temper=True a tempering (improve) recipe for a weapon or armor.
+
+    ingredients: [{"item", "count"}]. station: forge, skyforge, sharpening, armor_table, cooking, smelter or
+    tanning (default forge; tempering picks sharpening for weapons and armor_table for armor). conditions: as
+    for create_package, e.g. a perk or quest-stage requirement. Not yet tested in game.
+    """
+    return _record_tool("recipe", target_plugin, plugins, "create_recipe", editor_id, result, ingredients, station,
+                        count, temper, conditions)
+
+
+@mcp.tool()
+def create_global(target_plugin: str, editor_id: str, value: float = 0.0, kind: str = "float",
+                  plugins: list[str] | None = None) -> dict:
+    """Create a global variable (kind: float, short or long) holding a number a quest, condition or script reads."""
+    return _record_tool("global", target_plugin, plugins, "create_global", editor_id, value, kind, module="world_records")
+
+
+@mcp.tool()
+def create_message(target_plugin: str, editor_id: str, text: str, title: str | None = None,
+                   buttons: list[str] | None = None, seconds: float = 4.0,
+                   plugins: list[str] | None = None) -> dict:
+    """Create a message (MESG): a message box with buttons (Message.Show returns the pressed index) or, with no
+    buttons, a corner notification shown for `seconds`."""
+    return _record_tool("message", target_plugin, plugins, "create_message", editor_id, text, title, buttons,
+                        seconds, module="world_records")
+
+
+@mcp.tool()
+def create_activator(target_plugin: str, editor_id: str, name: str, model: str | None = None,
+                     clone_from: str | None = None, verb: str | None = None, script: str | None = None,
+                     plugins: list[str] | None = None) -> dict:
+    """Create an activator (ACTI): a lever, button, shrine or prop the player can use. model: a nif path, or
+    clone_from: an existing activator to copy the mesh from. verb: the prompt word (e.g. "Pull"). script: the
+    name of a compiled script to attach (make one with create_script). Place it with place_item."""
+    return _record_tool("activator", target_plugin, plugins, "create_activator", editor_id, name, model, clone_from,
+                        verb, script, module="world_records")
+
+
+@mcp.tool()
+def create_light(target_plugin: str, editor_id: str, name: str | None = None, radius: int = 256,
+                 color: list[int] | None = None, flags: list[str] | None = None, model: str | None = None,
+                 fade: float = 1.0, plugins: list[str] | None = None) -> dict:
+    """Create a light (LIGH). color: [r, g, b] 0-255. flags: dynamic (default), carried, negative, flicker,
+    off_by_default, flicker_slow, pulse, pulse_slow, spot, shadow_spot, shadow_hemisphere, shadow_omni. A
+    carried light (torch) needs a model. Place it with place_item. Untested in game."""
+    return _record_tool("light", target_plugin, plugins, "create_light", editor_id, name, radius,
+                        tuple(color or (255, 255, 255)), flags, model, fade, module="world_records")
+
+
+@mcp.tool()
+def create_sound(target_plugin: str, editor_id: str, descriptor: str, plugins: list[str] | None = None) -> dict:
+    """Create a sound object (SOUN) wrapping a sound descriptor (SNDR editor ID), for a script Sound property or
+    a placed emitter. A raw SNDR will not work as a Papyrus Sound property."""
+    return _record_tool("sound", target_plugin, plugins, "create_sound", editor_id, descriptor, module="world_records")
+
+
+@mcp.tool()
+def create_perk(target_plugin: str, editor_id: str, abilities: list[str], name: str | None = None,
+                description: str = "", hidden: bool = True, plugins: list[str] | None = None) -> dict:
+    """Create a perk that grants ability spells (create_spell kind=ability) while the player has it; give it
+    with Actor.AddPerk. Entry-point perks (damage, cost and so on) are not supported. Untested in game."""
+    return _record_tool("perk", target_plugin, plugins, "create_perk", editor_id, abilities, name, description,
+                        hidden, module="world_records")
+
+
+@mcp.tool()
+def create_music(target_plugin: str, editor_id: str, file: str, priority: int = 3, fade: float = 12.0,
+                 cells: list[str] | None = None, plugins: list[str] | None = None) -> dict:
+    """Create a music type playing one audio file under Data (e.g. Music\\MyMod\\theme.xwm; you supply it) and
+    set it as the music of cells in target_plugin. Untested in game."""
+    return _record_tool("music", target_plugin, plugins, "create_music", editor_id, file, priority, fade, cells,
+                        module="world_records")
+
+
+@mcp.tool()
+def create_weapon(target_plugin: str, source: str, editor_id: str, name: str | None = None,
+                  damage: int | None = None, value: int | None = None, weight: float | None = None,
+                  speed: float | None = None, reach: float | None = None, description: str | None = None,
+                  plugins: list[str] | None = None) -> dict:
+    """Make a custom weapon: clone a vanilla one (source) and set damage, gold value, weight, speed and reach by
+    name. Omitted stats keep the source's. target_plugin must exist. Add an enchantment with enchant_item and
+    place it with place_item or give it to an NPC with edit_npc add_inventory."""
+    return _record_tool("weapon", target_plugin, plugins, "create_weapon", source, editor_id, name, damage, value,
+                        weight, speed, reach, description, module="gear")
+
+
+@mcp.tool()
+def create_armor(target_plugin: str, source: str, editor_id: str, name: str | None = None,
+                 armor_rating: float | None = None, value: int | None = None, weight: float | None = None,
+                 description: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Make a custom armor piece: clone a vanilla one (source) and set the armor rating (as shown in game), gold
+    value and weight by name. Omitted stats keep the source's. target_plugin must exist."""
+    return _record_tool("armor", target_plugin, plugins, "create_armor", source, editor_id, name, armor_rating,
+                        value, weight, description, module="gear")
+
+
+@mcp.tool()
+def set_npc_schedule(target_plugin: str, npc: str, entries: list[dict], prefix: str | None = None,
+                     plugins: list[str] | None = None) -> dict:
+    """Give an NPC a daily routine. entries: [{activity: sandbox|sleep|eat (or donor: any Skyrim.esm package),
+    start: hour 0-24 (21.5 = 9:30pm), hours: 1-24, day?: 0 Sunday..6 Saturday}]. One package is cloned per entry
+    (editor IDs prefix1, prefix2...; prefix defaults to <npc>Sched) and appended to the NPC's package list, whose
+    order is its priority. Sleep and eat use the NPC's editor location, so place the NPC in a cell with a bed.
+    The NPC may be vanilla (an override is added). Untested in game."""
+    try:
+        _auto_snapshot(target_plugin, "pre_schedule")
+        from tools.records.ai_records import set_npc_schedule as run
+        return run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, npc, entries, prefix,
+                   refresh=lambda: (_invalidate(), npc_builder(_with_target(plugins, target_plugin)))[1])
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
+
+
+def _asset_voice(label, plugin, name, *args):
+    """Run a tools.records.asset_voice function on a plugin with the usual error handling."""
+    try:
+        from tools.records import asset_voice
+        return getattr(asset_voice, name)(_out_path(plugin), *args, data_dir=DATA_DIR)
+    except (ValueError, FileNotFoundError, KeyError, RuntimeError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def duplicate_assets(plugin: str, source: str, dest: str, editor_id: str | None = None, mode: str | None = None,
+                     model_name: str | None = None) -> dict:
+    """Give a record its own copy of its mesh(es) and textures so they can be edited without touching the original.
+
+    source: editor ID or form ID of a record with a model (STAT, MISC, WEAP, ARMO...) or a texture set. Files are
+    copied to Meshes\\<dest>\\ and Textures\\<dest>\\ next to the plugin and the texture paths inside the copied
+    NIFs rewritten. mode: clone (new record named editor_id; default when editor_id is given), repoint (edit the
+    record, or override a vanilla one) or files (copy only). model_name renames the first mesh. Run
+    package_plugin afterwards so the loose files ship.
+    """
+    _auto_snapshot(plugin, "pre_duplicate_assets")
+    return _asset_voice("assets", plugin, "duplicate_assets", source, dest, editor_id, mode, model_name)
+
+
+@mcp.tool()
+def create_voice_type(plugin: str, editor_id: str, female: bool = False, allow_default: bool = True) -> dict:
+    """Add a voice type (VTYP) to a plugin, for NPCs with their own recorded voice. Then assign_voice_type."""
+    return _asset_voice("voice_type", plugin, "create_voice_type", editor_id, female, allow_default)
+
+
+@mcp.tool()
+def assign_voice_type(plugin: str, npcs: list[str], voice_type: str) -> dict:
+    """Set the voice type of NPCs defined in the plugin (editor IDs). voice_type is a VTYP editor ID, from
+    create_voice_type or vanilla (its plugin must already be a master)."""
+    return _asset_voice("assign_voice", plugin, "assign_voice_type", npcs, voice_type)
+
+
+@mcp.tool()
+def import_voice_audio(plugin: str, line: str, audio: str, voice_type: str | None = None, fuz: bool = False) -> dict:
+    """Install an audio file as the voice of one dialogue line in the plugin (Sound/Voice/<plugin>/<voice type>/).
+
+    line: the voice file stem or part of the line's text; it must match one line, otherwise the matches are listed.
+    audio: path to a .wav/.fuz/.xwm or any format ffmpeg reads (converted to 44.1 kHz mono WAV). voice_type
+    defaults to the speaker's. fuz builds the lip-synced .fuz (needs the Skyrim SE Tools folder next to Data).
+    This does not synthesize speech: supply the recording.
+    """
+    return _asset_voice("voice_audio", plugin, "import_voice_audio", line, audio, voice_type, fuz)
 
 
 @mcp.tool()

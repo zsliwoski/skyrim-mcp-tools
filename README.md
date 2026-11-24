@@ -70,6 +70,8 @@ what a plan needs, and see the `skyrim-skse-scripting` skill.
 - `get_script` – decompile `.pex` scripts to pseudo-source
 - `api_get`, `api_search`, `api_status` – look up Papyrus functions and events (see the API database section)
 - `detect_skse` – report whether SKSE is installed, whether the compiler can see its sources, and which output scripts use it
+- `read_papyrus_log` – summarize the game's `Papyrus.0.log` (repeats folded, causes hinted; filter by script, level or previous session). Set `SKYRIM_LOG_DIR` if the log isn't under `Documents\My Games\Skyrim Special Edition\Logs\Script`
+- `inspect_save` – check a Skyrim SE save for a plugin: was it in the load order, and does each of its quests have saved state and which stages it reached (`list_saves` lists recent saves). Set `SKYRIM_SAVES_DIR` to override the folder. Needs the `lz4` package
 - `search_forms`, `search_cells`, `search_references`, `get_cell_contents`, `get_record`
 - `get_npc_face`, `read_book`, `list_book_models`, `list_texts`, `audit_dialogue_length`, `list_conditions`
 
@@ -93,14 +95,14 @@ what a plan needs, and see the `skyrim-skse-scripting` skill.
   skill also describes a bootstrap quest that starts a plugin's quests when it is installed mid-playthrough
 
 ### Records, items and world
-- `create_record`, `create_faction`, `create_package`, `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
+- `create_record`, `create_faction`, `create_package`, `create_container`, `create_leveled_list`, `add_to_leveled_list`, `create_outfit`, `create_recipe` (crafting and tempering), `create_global`, `create_message`, `create_activator`, `create_light`, `create_sound`, `create_perk` (ability perks), `create_music`, `create_weapon`, `create_armor` (stats by name), `set_npc_schedule` (timed sleep/eat/sandbox packages), `duplicate_assets` (own copy of a mesh and textures), `create_voice_type`, `assign_voice_type`, `import_voice_audio` (installs a recording you supply; no speech synthesis), `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
   `{"sig": "ENCH", "field": "cost", "value": 250}`, or `record_flags`), `copy_subrecords`, `drop_conditions`,
   `remove_records`. `reload_tools` reloads the `tools.*` Python modules in the running server (not `server.py`). `install_plugin` prunes stale fragment scripts and reports a locked file (Skyrim running); `deploy_plugin` validates, packages and installs in one call. `clone_record` clears the Non-Playable flag on ARMO and WEAP clones so they show in the inventory.
 - `diff_records` (field-aware comparison of two records) and `get_record(full=...)` with decoded `fields`
 - Splitting and refactoring plugins: `list_records`, `find_dependents` (what points at a group of records),
   `move_records` (move records to another plugin, renaming editor-ID prefixes and scripts) and `rename_script`
 - `place_item` (coordinates, or `near="<something in the cell>"` to pick a free spot beside it), `place_items`
-  (several items on free floor spots), `find_free_spots`, `create_cell`, `copy_cell_navmesh`, `make_reference_persistent`;
+  (several items on free floor spots), `find_free_spots`, `create_cell`, `link_cells` (a pair of load doors between two cells), `create_location`, `add_map_marker`, `edit_reference` (move, rotate, scale or disable a vanilla placed object), `copy_cell_navmesh`, `make_reference_persistent`;
   `get_cell_contents` takes `x`, `y`, `radius` to list the nearest objects. `search_cells`, `get_cell_contents`
   and `find_free_spots` take `target_plugin` to include the plugin you are authoring
   (`list_records(plugin, signature="CELL")` lists its cells)

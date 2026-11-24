@@ -18,3 +18,8 @@ description: "Use when putting items into a vanilla Skyrim cell: spawn books, sc
 - Each reference is named `<base>Ref`.
 - After placing, check in game: `item_console_commands(plugin)` gives `player.moveto` lines for each item, and `coc <cell>` enters the room.
 - To move items to another plugin, see `skyrim-plugin-refactoring`; placements are deleted with their base records and must be placed again.
+
+## Doors, locations, map markers, vanilla objects
+- `link_cells(target_plugin, prefix, a, b)` puts a load door in each of two cells and points them at each other (`a`/`b`: cell, x, y, z, rotation_z). Check in game with `coc`; if a door faces the wrong way, change its `rotation_z`.
+- `create_location` makes an LCTN (name, parent, `LocType` keywords, cells in your plugin); `add_map_marker` adds a map icon in an exterior cell and can bind it to the location.
+- `edit_reference(reference, target_plugin, disable=True, x=..., rotation_z=...)` moves, rotates, scales or disables a vanilla placed object (hex ID from `search_references` or `get_cell_contents`).

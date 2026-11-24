@@ -101,9 +101,11 @@ def build(path):
     add(p, "WEAP", 0x01397E, "IronDagger", [
         ("OBND", OBND), ("FULL", z("Iron Dagger")), ("DATA", struct.pack("<IfH", 20, 2.0, 4))])
     add(p, "WEAP", 0x012EB7, "IronSword", [
-        ("OBND", OBND), ("FULL", z("Iron Sword")), ("DATA", struct.pack("<IfH", 25, 9.0, 7))])
+        ("OBND", OBND), ("FULL", z("Iron Sword")), ("DATA", struct.pack("<IfH", 25, 9.0, 7)),
+        ("DNAM", struct.pack("<B3xff", 1, 1.0, 1.0) + bytes(88))])
     add(p, "ARMO", 0x012E4B, "ArmorIronBoots", [
-        ("OBND", OBND), ("FULL", z("Iron Boots")), ("DATA", struct.pack("<If", 25, 6.0))])
+        ("OBND", OBND), ("FULL", z("Iron Boots")), ("DATA", struct.pack("<If", 25, 6.0)),
+        ("DNAM", struct.pack("<i", 1000))])
     add(p, "ARMO", 0x0F1E8B, "ArmorThievesGuildHelmet", [
         ("OBND", OBND), ("FULL", z("Thieves Guild Hood")), ("DATA", struct.pack("<If", 50, 1.0))],
         flags=NON_PLAYABLE)
@@ -135,6 +137,20 @@ def build(path):
         ("OBND", OBND), ("FULL", z("Cheap Horkers")), ("DESC", z("Text.")),
         ("DATA", struct.pack("<BBxxIIf", 0, 0, 0, 5, 1.0))])
     add(p, "MISC", 0x00000F, "Gold001", [("OBND", OBND), ("FULL", z("Gold")), ("DATA", struct.pack("<If", 1, 0.0))])
+    add(p, "DOOR", 0x0270A1, "ImpDoorSingleLoad01", [("OBND", OBND), ("FULL", z("Door"))])
+    add(p, "STAT", 0x000010, "MapMarker", [("OBND", OBND)])
+    add(p, "KYWD", 0x0130DB, "LocTypeDungeon", [])
+    for n, edid in enumerate(("CraftingSmithingForge", "CraftingSmithingSharpeningWheel",
+                              "CraftingSmithingArmorTable")):
+        add(p, "KYWD", 0x088100 + n, edid, [])
+    add(p, "MISC", 0x05AD93, "IngotIron", [("OBND", OBND), ("FULL", z("Iron Ingot")),
+                                           ("DATA", struct.pack("<If", 1, 1.0))])
+    add(p, "LVLI", 0x0DD000, "LItemTestLoot", [("OBND", bytes(12)), ("LVLD", b"\0"), ("LVLF", b"\x01"),
+                                              ("LLCT", b"\x01"), ("LVLO", struct.pack("<HHIHH", 1, 0, 0x01397E, 1, 0))])
+    add(p, "ACTI", 0x0FA000, "TestActivator", [("OBND", OBND), ("FULL", z("Lever")),
+                                              ("MODL", z("Clutter\\Lever.nif")), ("MODT", bytes(12))])
+    add(p, "SNDR", 0x0FA001, "TestSoundDescriptor", [])
+    add(p, "SPEL", 0x0FA002, "TestAbilitySpell", [("FULL", z("Test Ability"))])
     add(p, "FACT", 0x0BD7AA, "CurrentHireling", [("FULL", z("Hireling")), ("DATA", bytes(4))])
     add(p, "QUST", 0x0750BA, "DialogueFollower", [("FULL", z("Follower")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])
     add(p, "QUST", 0x05A6DC, "DialogueFavorGeneric", [("FULL", z("Favor")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])
@@ -168,6 +184,9 @@ def build(path):
 
     package(p, 0x0F4F65, "PlayerFollowerPackage", floats=(128.0, 256.0))
     package(p, 0x0F4F66, "PlayerFollowerCombatOverridePackage", location=0)
+    for pid, pname in ((0x0F4F67, "DefaultSandboxCurrentLocation1024"), (0x0F4F68, "DefaultSleepPackageAnyTime"),
+                       (0x0F4F69, "DefaultEatMorning7x1")):
+        package(p, pid, pname, location=0)
     exterior_world(p, "Tamriel", (4, -11), "WoodChoppingBlock", (18900.0, -43500.0, -100.0))
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)

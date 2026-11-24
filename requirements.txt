@@ -4,3 +4,4 @@ numpy
 pytest
 pytest-cov
 -e ./esplib
+lz4

@@ -36,6 +36,10 @@ EXPECTED_TOOLS = {
         "api_search", "api_get", "api_status", "build_api_db",
         "create_quest", "add_quest_stage", "add_quest_objective", "build_quest", "edit_quest_alias",
         "remove_quest_alias", "attach_alias_script", "attach_quest_script", "add_clue_set", "add_quest_dialogue",
+        "read_papyrus_log", "inspect_save", "link_cells", "create_location", "add_map_marker", "edit_reference",
+        "create_container", "create_leveled_list", "add_to_leveled_list", "create_outfit", "create_recipe",
+        "create_global", "create_message", "create_activator", "create_light", "create_sound", "create_perk",
+        "create_music", "duplicate_assets", "create_voice_type", "assign_voice_type", "import_voice_audio", "create_weapon", "create_armor", "set_npc_schedule",
     }
 
 

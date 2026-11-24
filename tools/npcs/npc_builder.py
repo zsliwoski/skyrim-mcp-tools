@@ -76,6 +76,7 @@ FIELDS = {
     'add_inventory': 'Same format as inventory, but appends to the NPC\'s existing items instead of '
                      'replacing them (edit_npc only).',
     'packages': 'List of AI package identifiers; replaces the cloned list.',
+    'add_packages': 'List of AI package identifiers appended after the NPC\'s existing packages (edit_npc only).',
     'outfit': 'Either an existing outfit identifier, or a list of armor/leveled-item identifiers '
               'for a new OTFT record.',
     'placement': 'Object: {"cell": id or name} or {"worldspace", "grid_x", "grid_y"}, plus x, y, z, '
@@ -764,6 +765,11 @@ class NpcBuilder:
             p.errors.append("add_inventory is only for edit_npc; use inventory when creating an NPC")
         if spec.get('add_inventory') and spec.get('inventory') is not None:
             p.errors.append("give either inventory (replace) or add_inventory (append), not both")
+        r['add_packages'] = [self.resolve(p, 'package', e, 'add_packages') for e in spec.get('add_packages') or []]
+        if spec.get('add_packages') and not edit:
+            p.errors.append("add_packages is only for edit_npc; use packages when creating an NPC")
+        if spec.get('add_packages') and spec.get('packages') is not None:
+            p.errors.append("give either packages (replace) or add_packages (append), not both")
         outfit = spec.get('outfit')
         r['outfit_items'], r['outfit_existing'] = [], 0
         if isinstance(outfit, str):
@@ -1702,6 +1708,12 @@ class NpcBuilder:
                 ([('COCT', struct.pack('<I', len(r['inventory'])))] if r['inventory'] else [])
                 + [('CNTO', struct.pack('<Ii', lc(it), n)) for it, n in r['inventory']])
         setlist('packages', ['PKID'], [('PKID', fid_bytes(lc(k))) for k in r['packages']])
+        if r['add_packages']:
+            at = max((i for i, s in enumerate(rec.subrecords) if s.signature == 'PKID'), default=None)
+            if at is None:
+                at = max((i for i, s in enumerate(rec.subrecords) if s.signature == 'AIDT'), default=len(rec.subrecords) - 1)
+            cls = type(rec.subrecords[0])
+            rec.subrecords[at + 1:at + 1] = [cls('PKID', fid_bytes(lc(k))) for k in r['add_packages']]
         if r['add_inventory']:
             held = [s for s in rec.subrecords if s.signature == 'CNTO']
             rec.remove_subrecords('COCT')
