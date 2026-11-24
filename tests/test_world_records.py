@@ -61,3 +61,9 @@ def test_sound_perk_and_music(sandbox):
     assert struct.unpack('<I', _subs(recs["MusicHall"], 'XCMO')[0])[0] == recs["TestTheme"].form_id.value
     assert _subs(recs["TestTheme"], 'TNAM') == [struct.pack('<I', recs["TestThemeTrack"].form_id.value)]
     assert "must be a" in server.create_music("World.esp", "Bad", "theme.ogg")["error"]
+    # the track file ships with the plugin when it exists next to it
+    track = sandbox / "Music" / "Test" / "theme.xwm"
+    track.parent.mkdir(parents=True)
+    track.write_bytes(b"xwm")
+    from tools.core.plugin_edit import plugin_files
+    assert track.resolve() in {f.resolve() for f in plugin_files(sandbox / "World.esp", regen_seq=False)}

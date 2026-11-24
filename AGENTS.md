@@ -13,4 +13,6 @@ They are for the first run only.
 - Still update the build script with the same change so a future from-scratch build matches, but do not run it
   unless the user asks or the plugin does not exist yet.
 - After editing in place, run `validate_plugin`, then `package_plugin` and `install_plugin` as needed.
+- Always package a plugin (`package_plugin` or `deploy_plugin`) every time it is updated, so the user can install the
+  new version through Vortex. Check the zip also holds any loose files the packager might skip.
 - Never run a build script that may take more than a few minutes synchronously; run it detached or ask first.

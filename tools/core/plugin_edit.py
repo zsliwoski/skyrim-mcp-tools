@@ -76,7 +76,7 @@ def vmad_script_names(plugin):
 
 def referenced_assets(path):
     """Loose meshes and textures next to the plugin that its records use: model paths (MODL, MOD2-MOD5), texture-set
-    paths (TX00-TX07) and the textures named inside those meshes."""
+    paths (TX00-TX07), the textures named inside those meshes, and music track files (MUST ANAM)."""
     from tools.core import nif_tools
     path = Path(path)
     base = path.parent
@@ -102,6 +102,8 @@ def referenced_assets(path):
                         pass
             elif rec.signature == 'TXST' and sub.signature.startswith('TX0') and sub.data:
                 add(base / 'Textures' / text(sub))
+            elif rec.signature == 'MUST' and sub.signature == 'ANAM' and sub.data:
+                add(base / text(sub))
     return list(out.values())
 
 
