@@ -83,25 +83,42 @@ def create_location(b, target_plugin, editor_id, name, parent=None, keywords=Non
 
 
 def add_map_marker(refresh, target_plugin, editor_id, name, x, y, z_pos, marker_type='landmark', cell=None,
-                   worldspace='Tamriel', grid_x=None, grid_y=None, visible=True, can_travel=True,
-                   location=None):
-    """Place a named map marker in an exterior cell (persistent). It shows on the map once discovered.
+                   worldspace='Tamriel', grid_x=None, grid_y=None, visible=False, can_travel=True,
+                   location=None, radius=2000.0):
+    """Place a named map marker (persistent) in the worldspace's persistent cell, so the world map has it.
 
-    marker_type: a name from MARKER_TYPES or the number. visible: shown without discovery. can_travel: fast travel
-    to it. location: editor ID of an LCTN in target_plugin; the marker becomes its world marker (MNAM).
+    Markers kept in an exterior cell only show on the local map while that cell is loaded; vanilla ones live in
+    the worldspace's persistent cell, which is what this uses (the exterior cell is used only if the worldspace
+    has none, or cell is given). marker_type: a name from MARKER_TYPES or the number. visible: shown on the map
+    from the start; leave it off and the "Discovered" banner appears when the player comes within radius game
+    units (vanilla markers use 500-3500). can_travel: fast travel to it once shown. location: editor ID of an LCTN
+    in target_plugin; the marker becomes its world marker (MNAM).
     """
     if not re.fullmatch(r'[A-Za-z0-9_]+', editor_id or ''):
         raise ValueError("editor_id may contain only letters, digits and underscores")
     if not name:
         raise ValueError("name is required")
+    if radius is not None and radius <= 0:
+        raise ValueError("radius must be positive")
     kind = MARKER_TYPES.index(marker_type) if marker_type in MARKER_TYPES else marker_type
     if not isinstance(kind, int) or not 0 <= kind <= 255:
         raise ValueError(f"marker_type must be one of {', '.join(MARKER_TYPES)} or a number")
     flags = (1 if visible else 0) | (2 if can_travel else 0)
     extra = [('XMRK', b''), ('FNAM', bytes([flags])), ('FULL', z(name)), ('TNAM', bytes([kind, 0]))]
+    if radius:
+        extra.append(('XRDS', struct.pack('<f', float(radius))))
+    # XLRT: the location ref type every vanilla marker carries (Skyrim.esm is always master 0)
+    extra.append(('XLRT', struct.pack('<I', 0x0010F63C)))
     builder, _ = refresh()
+    world_persistent = cell is None
+    if world_persistent:
+        try:
+            builder.cells.persistent(worldspace)
+        except ValueError:
+            world_persistent = False
     res = place_item(builder, 'MapMarker', target_plugin, cell, x, y, z_pos, 0.0, None, True, editor_id,
-                     worldspace=worldspace, grid_x=grid_x, grid_y=grid_y, kinds=['STAT'], extra=extra)
+                     worldspace=worldspace, grid_x=grid_x, grid_y=grid_y, kinds=['STAT'], extra=extra,
+                     world_persistent=world_persistent)
     if location:
         builder, _ = refresh()
         path = resolve_target_path(target_plugin, builder.output_dir, builder.data_dir)

@@ -23,13 +23,14 @@ def base_charge(rec):
 
 def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=None, persistent=False,
                editor_id=None, rotation_x=0.0, rotation_y=0.0, charge=None, worldspace=None, grid_x=None,
-               grid_y=None, kinds=None, extra=None):
+               grid_y=None, kinds=None, extra=None, world_persistent=False):
     """Add a REFR for `base` to `cell` inside target_plugin (the file must already exist).
 
     An enchanted weapon placed without XCHG spawns with no charge, so charge defaults to the weapon's full
     charge (its EAMT); pass a number to override. rotation_x/y (degrees) tilt the item, e.g. 90 lays a dagger flat.
     For an exterior cell give worldspace with grid_x/grid_y instead of a cell name. kinds limits the base
-    record types (default: everything placeable).
+    record types (default: everything placeable). world_persistent puts the reference in the worldspace's
+    persistent cell (loaded everywhere, as the world map needs for markers) instead of an exterior cell.
     """
     kinds = kinds or PLACEABLE
     path = resolve_target_path(target_plugin, b.output_dir, b.data_dir)
@@ -51,7 +52,7 @@ def place_item(b, base, target_plugin, cell, x, y, z_pos, rotation_z=0.0, scale=
         raise ValueError("scale must be between 0.1 and 10")
 
     p = Plan()
-    p.cell = b.cells.find(cell, worldspace, grid_x, grid_y)
+    p.cell = b.cells.persistent(worldspace) if world_persistent else b.cells.find(cell, worldspace, grid_x, grid_y)
     if fid:
         p.abs_ids.add(fid)
     b.target, b.plugin = target, plugin

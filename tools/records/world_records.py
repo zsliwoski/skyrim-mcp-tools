@@ -143,12 +143,24 @@ def create_sound(b, target_plugin, editor_id, descriptor):
     return _finish(b, path, target, rec, oid)
 
 
-def create_perk(b, target_plugin, editor_id, abilities, name=None, description='', hidden=True, playable=True):
-    """PERK that grants spells (abilities, e.g. from create_spell kind=ability) once the player has it.
-    Add it with Actor.AddPerk. Entry-point (damage, cost...) perks are not supported."""
-    if not abilities:
-        raise ValueError("give at least one ability spell")
-    path, target, spells = _new(b, target_plugin, editor_id, 'PERK', [(a, ['SPEL']) for a in abilities])
+ENTRY_FUNCTIONS = {'set': 1, 'add': 2, 'multiply': 3}
+# name: (entry point, condition tabs) for entry points seen in Ordinator's perks
+ENTRY_POINTS = {'pickpocket_chance': (56, 3)}
+
+
+def create_perk(b, target_plugin, editor_id, abilities=None, name=None, description='', hidden=True, playable=True,
+                entry_points=None):
+    """PERK that grants spells (abilities, e.g. from create_spell kind=ability) once the player has it, and/or
+    changes a game value through entry points: a list of {entry_point, function, value, tabs?}. entry_point is a
+    number (the Skyrim perk entry point ID) or a name in ENTRY_POINTS; function is set, add or multiply (or the
+    number); value a float; tabs the entry point's condition tab count (default 3). Add it with Actor.AddPerk."""
+    entry_points = entry_points or []
+    if not abilities and not entry_points:
+        raise ValueError("give at least one ability spell or entry point")
+    for ep in entry_points:
+        if not isinstance(ep, dict) or 'value' not in ep or 'entry_point' not in ep:
+            raise ValueError("each entry point needs entry_point and value")
+    path, target, spells = _new(b, target_plugin, editor_id, 'PERK', [(a, ['SPEL']) for a in abilities or []])
     oid = _start(b, target)
     rec = Record('PERK', FormID(b.own(oid)), 0)
     rec.add_subrecord('EDID', z(editor_id))
@@ -159,6 +171,17 @@ def create_perk(b, target_plugin, editor_id, abilities, name=None, description='
     for fid in spells:
         rec.add_subrecord('PRKE', bytes([1, 0, 0]))
         rec.add_subrecord('DATA', fid_bytes(b.local(fid)))
+        rec.add_subrecord('PRKF', b'')
+    for ep in entry_points:
+        point, tabs = ENTRY_POINTS.get(ep['entry_point'], (ep['entry_point'], ep.get('tabs', 3)))
+        func = ENTRY_FUNCTIONS.get(ep.get('function', 'add'), ep.get('function'))
+        if not isinstance(point, int) or not isinstance(func, int) or not 0 <= point <= 255 or not 0 <= func <= 255:
+            raise ValueError("entry_point must be a number or one of "
+                             f"{', '.join(ENTRY_POINTS)}; function a number or set, add, multiply")
+        rec.add_subrecord('PRKE', bytes([2, 0, 0]))
+        rec.add_subrecord('DATA', bytes([point, func, ep.get('tabs', tabs)]))
+        rec.add_subrecord('EPFT', bytes([1]))
+        rec.add_subrecord('EPFD', struct.pack('<f', float(ep['value'])))
         rec.add_subrecord('PRKF', b'')
     return _finish(b, path, target, rec, oid)
 

@@ -1694,22 +1694,26 @@ def create_location(target_plugin: str, editor_id: str, name: str, parent: str |
 @mcp.tool()
 def add_map_marker(target_plugin: str, editor_id: str, name: str, x: float, y: float, z: float,
                    worldspace: str = "Tamriel", grid_x: int | None = None, grid_y: int | None = None,
-                   marker_type: str = "landmark", visible: bool = True, can_travel: bool = True,
-                   location: str | None = None, plugins: list[str] | None = None) -> dict:
-    """Put a named world-map marker at a position in an exterior cell.
+                   marker_type: str = "landmark", visible: bool = False, can_travel: bool = True,
+                   location: str | None = None, plugins: list[str] | None = None,
+                   radius: float = 2000.0) -> dict:
+    """Put a named world-map marker at a position in the world.
 
-    grid_x/grid_y: the exterior cell (use search_cells or search_references to find the grid). marker_type: city,
+    The marker goes in the worldspace's persistent cell, as vanilla markers do, so it shows on the world map (a
+    marker in an exterior cell only shows on the local map). marker_type: city,
     town, settlement, cave, camp, fort, nordic_ruin, dwemer_ruin, shipwreck, grove, landmark, dragon_lair, farm,
     wood_mill, mine, imperial_camp, stormcloak_camp, doomstone, wheat_mill, smelter, stable, imperial_tower,
     clearing, pass, altar, rock, lighthouse, orc_stronghold, giant_camp, shack, nordic_tower, nordic_dwelling,
-    docks, shrine (or a number). visible shows it before discovery; can_travel allows fast travel to it.
-    location: an LCTN already in target_plugin to use this as its world marker. A snapshot is taken first.
+    docks, shrine (or a number). visible (default off) shows it on the map from the start; leave it off and the
+    "Discovered" notification appears when the player comes within radius game units. can_travel allows fast travel
+    to it. location: an LCTN already in target_plugin to use this as its world marker. grid_x/grid_y are only used
+    if the worldspace has no persistent cell. A snapshot is taken first.
     """
     try:
         _auto_snapshot(target_plugin, "pre_map_marker")
         from tools.cells.location import add_map_marker as run
         return run(_refresher(plugins, target_plugin), target_plugin, editor_id, name, x, y, z, marker_type,
-                   None, worldspace, grid_x, grid_y, visible, can_travel, location)
+                   None, worldspace, grid_x, grid_y, visible, can_travel, location, radius)
     except (ValueError, FileNotFoundError, KeyError) as e:
         return {"error": str(e)}
     finally:
@@ -1861,12 +1865,19 @@ def create_sound(target_plugin: str, editor_id: str, descriptor: str, plugins: l
 
 
 @mcp.tool()
-def create_perk(target_plugin: str, editor_id: str, abilities: list[str], name: str | None = None,
-                description: str = "", hidden: bool = True, plugins: list[str] | None = None) -> dict:
-    """Create a perk that grants ability spells (create_spell kind=ability) while the player has it; give it
-    with Actor.AddPerk. Entry-point perks (damage, cost and so on) are not supported. Untested in game."""
+def create_perk(target_plugin: str, editor_id: str, abilities: list[str] | None = None, name: str | None = None,
+                description: str = "", hidden: bool = True, entry_points: list[dict] | None = None,
+                plugins: list[str] | None = None) -> dict:
+    """Create a perk that grants ability spells (create_spell kind=ability) and/or changes a game value through
+    entry points, like a genuine perk (no active-effect entry; the entry point is what Ordinator-style perks use).
+
+    entry_points: list of {entry_point, function, value, tabs?}. entry_point: the Skyrim entry point number or
+    'pickpocket_chance'; function: set, add or multiply (or number); tabs: the entry point's condition tab count
+    (default 3). Ability spells show in the active effects list; entry-point perks do not. hidden=False lists the
+    perk in the Skills menu perk list only if it is also in a skill tree (not built here). Give it with
+    Actor.AddPerk. Entry-point perks beyond pickpocket are untested in game."""
     return _record_tool("perk", target_plugin, plugins, "create_perk", editor_id, abilities, name, description,
-                        hidden, module="world_records")
+                        hidden, True, entry_points, module="world_records")
 
 
 @mcp.tool()

@@ -137,17 +137,37 @@ def test_create_voice_type_and_assign_to_npc(plugin_path):
     assert "VoiceTestVoice" in vl.all_voice_types(model)
 
 
+def _pcm_wav(path, width=2, channels=1):
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(44100)
+        w.writeframes(b"\0" * width * channels * 10)
+
+
 def test_import_audio_copies_wav_and_replaces_other_formats(plugin_path, tmp_path):
     ln = lines_of(plugin_path)[0]
     src = tmp_path / "take.wav"
-    src.write_bytes(b"RIFFdata")
+    _pcm_wav(src)
     old = vl.voice_root(plugin_path, ln.plugin_dir) / "MaleNord" / f"{ln.stem}.fuz"
     old.parent.mkdir(parents=True)
     old.write_bytes(b"old")
     dest = vl.import_audio(ln, src, plugin_path, "MaleNord")
-    assert dest.read_bytes() == b"RIFFdata"
+    assert dest.read_bytes() == src.read_bytes()
     assert dest.name == f"{ln.stem}.wav"
     assert not old.exists()
+
+
+def test_import_audio_converts_wav_the_game_cannot_play(plugin_path, tmp_path, monkeypatch):
+    ln = lines_of(plugin_path)[0]
+    monkeypatch.setattr(vl, "find_ffmpeg", lambda: None)
+    for name, make in (("float.wav", lambda p: p.write_bytes(b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x03\0")),
+                       ("stereo.wav", lambda p: _pcm_wav(p, channels=2))):
+        src = tmp_path / name
+        make(src)
+        with pytest.raises(RuntimeError, match="ffmpeg"):
+            vl.import_audio(ln, src, plugin_path, "MaleNord")
 
 
 def test_import_audio_converts_other_formats_with_ffmpeg(plugin_path, tmp_path, monkeypatch):

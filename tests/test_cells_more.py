@@ -134,6 +134,7 @@ def test_location_assigns_cell_and_marker_links_back(plugin_with_hall):
     ref = next(r for r in all_records(plug) if r.editor_id == "HallMarker")
     assert int(ref.flags) & 0x400 and bytes(ref.get_subrecord('TNAM').data) == bytes([8, 0])
     assert bytes(ref.get_subrecord('FNAM').data) == bytes([2])
+    assert struct.unpack('<f', bytes(ref.get_subrecord('XRDS').data))[0] == 2000.0
     assert struct.unpack_from('<I', bytes(loc.get_subrecord('MNAM').data))[0] == ref.form_id.value
 
 

@@ -459,9 +459,19 @@ def assign_voice_type(plugin_path, npc_form_ids, vtyp_form_id):
     return changed
 
 
+def _is_pcm16_mono(path):
+    """True for a plain 16-bit mono PCM WAV, the only WAV the game plays (float or stereo ones are silent)."""
+    import wave
+    try:
+        with wave.open(str(path)) as w:
+            return w.getsampwidth() == 2 and w.getnchannels() == 1
+    except (wave.Error, EOFError):
+        return False
+
+
 def import_audio(line, src, plugin_path, voice_type):
-    """Copy an audio file in as the line's voice file. .wav/.fuz/.xwm are copied as they are; anything else is
-    converted to 44.1 kHz 16-bit mono WAV with ffmpeg. Any other format of the same line in that folder is removed."""
+    """Copy an audio file in as the line's voice file. .fuz/.xwm and 16-bit mono PCM .wav are copied as they are;
+    anything else (including float or stereo WAV) is converted to 44.1 kHz 16-bit mono WAV with ffmpeg. Any other format of the same line in that folder is removed."""
     import shutil
     src = Path(src)
     ext = src.suffix.lower()
@@ -469,7 +479,7 @@ def import_audio(line, src, plugin_path, voice_type):
     dest.parent.mkdir(parents=True, exist_ok=True)
     for other in AUDIO_EXTS:
         (dest.parent / f"{line.stem}{other}").unlink(missing_ok=True)
-    if ext in AUDIO_EXTS:
+    if ext in AUDIO_EXTS and not (ext == '.wav' and not _is_pcm16_mono(src)):
         shutil.copyfile(src, dest)
         return dest
     ffmpeg = find_ffmpeg()

@@ -28,7 +28,12 @@ def test_voice_type_assign_and_import(plugin_path, tmp_path):  # noqa: F811
     with pytest.raises(ValueError, match="not NPCs"):
         av.assign_voice_type(plugin_path, ["Nobody"], "MyVoice")
     wav = tmp_path / "in.wav"
-    wav.write_bytes(b"RIFF")
+    import wave
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(b"\0\0")
     out = av.import_voice_audio(plugin_path, "Second line", wav, "MyVoice")
     assert out["file"].endswith("_2.wav") and (plugin_path.parent / "Sound" / "Voice" / "Voice.esp" / "MyVoice").is_dir()
     with pytest.raises(ValueError, match="matches no spoken line"):

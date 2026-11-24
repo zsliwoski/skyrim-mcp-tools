@@ -53,11 +53,16 @@ def test_sound_perk_and_music(sandbox):
     server._models.clear()
     kw = {"plugins": ["Skyrim.esm", str(sandbox / "World.esp")]}
     _ok(server.create_perk("World.esp", "TestPerk", ["TestAbilitySpell"], name="Test Perk", **kw))
+    _ok(server.create_perk("World.esp", "TestEntryPerk", name="Light Fingers", **kw,
+                           entry_points=[{"entry_point": "pickpocket_chance", "function": "add", "value": 40}]))
     _ok(server.create_music("World.esp", "TestTheme", "Music\\Test\\theme.xwm", cells=["MusicHall"], **kw))
     recs = _recs(sandbox / "World.esp")
     assert len(_subs(recs["TestSoundObj"], 'SDSC')[0]) == 4
     perk = recs["TestPerk"]
     assert _subs(perk, 'PRKE') == [bytes([1, 0, 0])] and len(_subs(perk, 'DATA')[1]) == 4
+    ep = recs["TestEntryPerk"]
+    assert _subs(ep, 'PRKE') == [bytes([2, 0, 0])] and _subs(ep, 'DATA')[1] == bytes([56, 2, 3])
+    assert _subs(ep, 'EPFT') == [bytes([1])] and _subs(ep, 'EPFD') == [struct.pack('<f', 40)]
     assert struct.unpack('<I', _subs(recs["MusicHall"], 'XCMO')[0])[0] == recs["TestTheme"].form_id.value
     assert _subs(recs["TestTheme"], 'TNAM') == [struct.pack('<I', recs["TestThemeTrack"].form_id.value)]
     assert "must be a" in server.create_music("World.esp", "Bad", "theme.ogg")["error"]
