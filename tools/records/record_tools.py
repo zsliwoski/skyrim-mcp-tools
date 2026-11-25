@@ -179,12 +179,33 @@ def remove_records(path, records):
     refs = [r for r in all_records(plugin) if r.signature in ('REFR', 'ACHR') and r.get_subrecord('NAME') is not None
             and struct.unpack('<I', bytes(r.get_subrecord('NAME').data))[0] in ids]
     removed = [f"{r.signature} {r.editor_id or ''} {r.form_id.value:08X}".replace('  ', ' ') for r in targets + refs]
+    # A record already registered may live in a save, so it stays (with its refs disabled) instead of vanishing.
+    from tools.core import idregistry
+    registered = set(idregistry.load(path)['ids']) if idregistry.registry_path(path).exists() else set()
+    keep = [t for t in targets if idregistry._key(t.form_id.value & 0xFFFFFF) in registered]
+    kept_ids = {t.form_id.value for t in keep}
+    retired = []
     for r in targets + refs:
-        plugin.remove_record(r)
+        placed = r.signature in ('REFR', 'ACHR', 'ACRE')
+        pointed = placed and r.get_subrecord('NAME') is not None and \
+            struct.unpack('<I', bytes(r.get_subrecord('NAME').data))[0] in kept_ids
+        if pointed or (placed and r in keep):
+            r.flags = int(r.flags) | 0x800
+            retired.append(r)
+        elif r in keep:
+            retired.append(r)
+        else:
+            plugin.remove_record(r)
+    if retired:
+        idregistry.retire(path, [r.form_id.value & 0xFFFFFF for r in retired])
     dangling = sorted({f"{r.editor_id or r.signature} {s.signature}" for r in all_records(plugin)
                        for s in r.subrecords if len(s.data) == 4
                        and struct.unpack('<I', bytes(s.data))[0] in ids and s.signature != 'NAME'})
     plugin.header.version = 1.7
     plugin.modified = True
     plugin.save(str(path))
-    return {'removed': removed, 'still_referenced_by': dangling}
+    result = {'removed': removed, 'still_referenced_by': dangling}
+    if retired:
+        result['retired'] = [f"{r.signature} {r.editor_id or ''} {r.form_id.value:08X}".replace('  ', ' ') for r in retired]
+        result['note'] = 'registered records are kept (references disabled) so existing saves stay valid'
+    return result

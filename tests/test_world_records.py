@@ -46,6 +46,53 @@ def test_activator_copies_mesh_and_light_packs_data(sandbox):
     assert "carried" in server.create_light("World.esp", "Torch", flags=["carried"])["error"]
 
 
+def test_attach_script_fills_properties_by_editor_id(sandbox):
+    from esplib.vmad import VmadData
+    _ok(server.create_global("World.esp", "Counter", 0))
+    _ok(server.create_activator("World.esp", "Pull", "Pull", clone_from="TestActivator"))
+    src = "Scriptname PullScript extends ObjectReference\nGlobalVariable Property Counter Auto\nInt Property Max Auto\n"
+    _ok(server.attach_script("Pull", "World.esp", "PullScript", {"Counter": {"form": "Counter"}, "Max": 3}, source=src))
+    recs = _recs(sandbox / "World.esp")
+    vm = VmadData.parse(_subs(recs["Pull"], 'VMAD')[0], 'ACTI')
+    props = {p.name: p for p in vm.scripts[0].properties}
+    assert props["Counter"].value.form_id == recs["Counter"].form_id.value and props["Max"].value == 3
+    assert "declares no property" in server.attach_script("Pull", "World.esp", "PullScript", {"Nope": 1})["error"]
+
+
+def test_check_script_warns_on_hardcoded_form_ids():
+    src = 'Scriptname HardCoded\nEvent OnInit()\n  Form f = Game.GetFormFromFile(0x800, "X.esp")\nEndEvent\n'
+    assert server.check_script(src)["warnings"]
+    assert not server.check_script("Scriptname Clean\n")["warnings"]
+
+
+def test_perk_conditions_and_skill_tree_node(sandbox):
+    from tools.records.skill_tree import _nodes
+    _ok(server.create_perk("Tree.esp", "TreePerk", name="Tree Perk", hidden=False, skill="Alchemy", skill_level=30,
+                           requires_perks=["TestAlchemist"], entry_points=[{"entry_point": 73, "function": "set",
+                                                                           "value": 1.0, "tabs": 1}]))
+    perk = _recs(sandbox / "Tree.esp")["TreePerk"]
+    conds = _subs(perk, 'CTDA')
+    assert struct.unpack_from('<BxxxfHxxI', conds[0]) == (0x60, 30.0, 0x115, 16)
+    assert struct.unpack_from('<fH', conds[1], 4) == (1.0, 0x1C0) and len(conds) == 2
+    assert _subs(perk, 'DATA')[0][4] == 0
+    assert "unknown skill" in server.create_perk("Tree.esp", "Bad", skill="Cooking", entry_points=[
+        {"entry_point": 73, "value": 1}])["error"]
+
+    res = _ok(server.add_perk_to_skill_tree("Tree.esp", "Alchemy", "TreePerk", parents=["TestAlchemist"]))
+    assert res["node"] == 2 and res["tree_size"] == 3
+    recs = _recs(sandbox / "Tree.esp")
+    avif = recs["AVAlchemy"]
+    nodes = {i["index"]: i for _, _, i in _nodes([(s.signature, bytes(s.data)) for s in avif.subrecords])}
+    assert nodes[1]["links"] == [2] and nodes[2]["perk"] == recs["TreePerk"].form_id.value
+    assert nodes[1]["perk"] == 0x0BE127 and nodes[0]["links"] == [1]
+    assert nodes[2]["YNAM"] == 1 and nodes[2]["XNAM"] == 3
+    assert "already in" in server.add_perk_to_skill_tree("Tree.esp", "Alchemy", "TreePerk")["error"]
+    _ok(server.create_perk("Tree.esp", "Other", hidden=False, entry_points=[{"entry_point": 73, "value": 1}]))
+    _ok(server.create_perk("Tree.esp", "Child", hidden=False, entry_points=[{"entry_point": 73, "value": 1}]))
+    assert "not in the Alchemy tree" in server.add_perk_to_skill_tree(
+        "Tree.esp", "Alchemy", "Child", parents=["Other"])["error"]
+
+
 def test_sound_perk_and_music(sandbox):
     _ok(server.create_sound("World.esp", "TestSoundObj", "TestSoundDescriptor"))
     server._models.clear()

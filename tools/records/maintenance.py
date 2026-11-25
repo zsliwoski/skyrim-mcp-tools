@@ -505,12 +505,16 @@ def check_script(source):
     m = re.search(r'^\s*scriptname\s+([A-Za-z][A-Za-z0-9_]*)', source, re.I | re.M)
     if not m:
         raise ValueError("source must start with 'Scriptname <name> ...'")
+    warnings = []
+    if re.search(r'GetFormFromFile\s*\(\s*(0x[0-9A-Fa-f]+|\d+)\s*,', source):
+        warnings.append("hardcoded form ID in Game.GetFormFromFile: it breaks when the record's ID changes. Declare "
+                        "`<Type> Property X Auto` and fill it with attach_script (by editor ID) instead.")
     with tempfile.TemporaryDirectory() as tmp:
         try:
             compile_script(m.group(1), source, tmp)
         except CompileError as e:
-            return {'script': m.group(1), 'ok': False, 'output': str(e)}
-    return {'script': m.group(1), 'ok': True, 'output': ''}
+            return {'script': m.group(1), 'ok': False, 'output': str(e), 'warnings': warnings}
+    return {'script': m.group(1), 'ok': True, 'output': '', 'warnings': warnings}
 
 
 def quest_console_commands(path, quest):

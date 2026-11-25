@@ -151,6 +151,14 @@ def build(path):
                                               ("MODL", z("Clutter\\Lever.nif")), ("MODT", bytes(12))])
     add(p, "SNDR", 0x0FA001, "TestSoundDescriptor", [])
     add(p, "SPEL", 0x0FA002, "TestAbilitySpell", [("FULL", z("Test Ability"))])
+    add(p, "PERK", 0x0BE127, "TestAlchemist", [("FULL", z("Alchemist")), ("DESC", z("")), ("DATA", bytes([0, 0, 1, 1, 0]))])
+    u32, f32 = (lambda v: struct.pack("<I", v)), (lambda v: struct.pack("<f", v))
+    add(p, "AVIF", 0x000456, "AVAlchemy", [
+        ("FULL", z("Alchemy")), ("DESC", z("")), ("CNAM", u32(2)), ("AVSK", bytes(16)),
+        ("PNAM", u32(0)), ("FNAM", u32(0)), ("XNAM", u32(0)), ("YNAM", u32(0)), ("HNAM", f32(0.0)),
+        ("VNAM", f32(0.0)), ("SNAM", u32(0x456)), ("CNAM", u32(1)), ("INAM", u32(0)),
+        ("PNAM", u32(0x0BE127)), ("FNAM", u32(1)), ("XNAM", u32(3)), ("YNAM", u32(0)), ("HNAM", f32(-0.1)),
+        ("VNAM", f32(0.0)), ("SNAM", u32(0x456)), ("INAM", u32(1))])
     add(p, "FACT", 0x0BD7AA, "CurrentHireling", [("FULL", z("Hireling")), ("DATA", bytes(4))])
     add(p, "QUST", 0x0750BA, "DialogueFollower", [("FULL", z("Follower")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])
     add(p, "QUST", 0x05A6DC, "DialogueFavorGeneric", [("FULL", z("Favor")), ("DNAM", struct.pack("<HBBII", 0x11, 50, 0, 0, 0))])

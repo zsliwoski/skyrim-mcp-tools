@@ -3,6 +3,7 @@ import functools
 import os
 import re
 import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -29,7 +30,7 @@ WRITE_TOOLS = {
     'rename_script', 'move_records', 'create_script_effects', 'create_enchanted_item', 'build_lore_db', 'build_api_db',
     'link_cells', 'create_location', 'add_map_marker', 'edit_reference', 'create_container',
     'create_global', 'create_weapon', 'create_armor', 'set_npc_schedule', 'create_message', 'create_activator', 'create_light', 'create_sound', 'create_perk',
-    'create_music',
+    'create_music', 'seed_ids', 'release_plugin', 'migrate_plugin', 'attach_script', 'add_perk_to_skill_tree',
     'create_leveled_list', 'add_to_leveled_list', 'create_outfit', 'create_recipe',
     'duplicate_assets', 'create_voice_type', 'assign_voice_type', 'import_voice_audio',
 }
@@ -500,6 +501,26 @@ def attach_alias_script(quest: str, target_plugin: str, alias: str, script: str,
         from tools.quests.quest_scripts import attach_alias_script as run
         _auto_snapshot(target_plugin, "pre_attach_alias_script")
         res = run(npc_builder(plugins), quest, target_plugin, alias, script, properties, source)
+        _invalidate()
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def attach_script(record: str, target_plugin: str, script: str, properties: dict | None = None,
+                  source: str | None = None, plugins: list[str] | None = None) -> dict:
+    """Bind a Papyrus script to an own base record (activator, container, door, NPC, item...), filling its
+    properties by editor ID so the script needs no hardcoded form IDs (and survives ID changes).
+
+    properties: {name: value}; a bool, int, float or str binds that type, {"form": "EditorID"} binds a record.
+    Each property must be declared in the script (Form/typed `Property X Auto`). Other scripts and existing
+    properties are kept. Run package_plugin afterwards.
+    """
+    try:
+        from tools.quests.quest_scripts import attach_script as run
+        _auto_snapshot(target_plugin, "pre_attach_script")
+        res = run(npc_builder(plugins), record, target_plugin, script, properties, source)
         _invalidate()
         return res
     except (ValueError, FileNotFoundError) as e:
@@ -1867,17 +1888,40 @@ def create_sound(target_plugin: str, editor_id: str, descriptor: str, plugins: l
 @mcp.tool()
 def create_perk(target_plugin: str, editor_id: str, abilities: list[str] | None = None, name: str | None = None,
                 description: str = "", hidden: bool = True, entry_points: list[dict] | None = None,
+                skill: str | None = None, skill_level: int = 0, requires_perks: list[str] | None = None,
                 plugins: list[str] | None = None) -> dict:
     """Create a perk that grants ability spells (create_spell kind=ability) and/or changes a game value through
     entry points, like a genuine perk (no active-effect entry; the entry point is what Ordinator-style perks use).
 
     entry_points: list of {entry_point, function, value, tabs?}. entry_point: the Skyrim entry point number or
     'pickpocket_chance'; function: set, add or multiply (or number); tabs: the entry point's condition tab count
-    (default 3). Ability spells show in the active effects list; entry-point perks do not. hidden=False lists the
-    perk in the Skills menu perk list only if it is also in a skill tree (not built here). Give it with
+    (default 3). Ability spells show in the active effects list; entry-point perks do not. For a perk in a skill
+    tree use hidden=False, skill (e.g. Alchemy) with skill_level, and requires_perks (parent perk editor IDs);
+    these become the perk's conditions, then place it with add_perk_to_skill_tree. Give it with
     Actor.AddPerk. Entry-point perks beyond pickpocket are untested in game."""
     return _record_tool("perk", target_plugin, plugins, "create_perk", editor_id, abilities, name, description,
-                        hidden, True, entry_points, module="world_records")
+                        hidden, True, entry_points, skill, skill_level, requires_perks, module="world_records")
+
+
+@mcp.tool()
+def add_perk_to_skill_tree(target_plugin: str, skill: str, perk: str, parents: list[str] | None = None,
+                           x: int | None = None, y: int | None = None, horizontal: float | None = None,
+                           vertical: float | None = None, plugins: list[str] | None = None) -> dict:
+    """Add a perk (yours or any loaded one) as a node of a skill tree, e.g. skill Alchemy.
+
+    Overrides the skill's AVIF in target_plugin, starting from the winning version among plugins (include a
+    perk overhaul such as Ordinator in plugins so its tree is the base; the patch must load after it). parents:
+    perk editor IDs in that tree whose node gets a line to the new one. x/y: grid cell; horizontal/vertical: the
+    node's position in the constellation (default: offset from the first parent). Run package_plugin after."""
+    try:
+        _auto_snapshot(target_plugin, "pre_skill_tree")
+        from tools.records.skill_tree import add_perk_to_skill_tree as run
+        return run(npc_builder(_with_target(plugins, target_plugin)), target_plugin, skill, perk, parents, x, y,
+                   horizontal, vertical)
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        return {"error": str(e)}
+    finally:
+        _invalidate()
 
 
 @mcp.tool()
@@ -2034,6 +2078,82 @@ def list_snapshots(plugin: str) -> list[dict]:
         return run(_out_path(plugin))
     except (ValueError, FileNotFoundError) as e:
         return [{"error": str(e)}]
+
+
+@mcp.tool()
+def seed_ids(plugin: str) -> dict:
+    """Start stable-ID tracking for an output plugin: record every own record's ID in output/<Plugin>/ids.json.
+
+    From then on IDs are never reused (new records always get IDs above the registry's high-water mark) and
+    remove_records keeps registered records, disabling their references, so existing saves stay valid.
+    Also reports drift (missing, renumbered, changed or unregistered records) against the registry.
+    """
+    from tools.core import idregistry
+    try:
+        path = _out_path(plugin)
+        res = idregistry.sync(path)
+        res['drift'] = idregistry.drift(path)
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def check_save_compat(plugin: str, baseline: str = "latest") -> dict:
+    """Compare an output plugin with a released baseline and list what would break existing saves.
+
+    Flags removed or retyped records, reused IDs, removed scripts or script properties, renamed editor IDs and
+    master changes as breaking or risky. verdict is ok, risky, breaking or no_baseline.
+    """
+    from tools.project import compat
+    try:
+        return compat.check(_out_path(plugin), baseline)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def release_plugin(plugin: str, version: str, force: bool = False) -> dict:
+    """Record the plugin's current state as a released baseline (output/<Plugin>/baselines/<version>.esp).
+
+    Call it when the version players have goes out. Later check_save_compat and migrate_plugin compare against
+    it. Refuses when the plugin breaks saves relative to the previous baseline unless force is true.
+    """
+    from tools.project import compat
+    try:
+        return compat.release(_out_path(plugin), version, force)
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def plugin_status(plugin: str) -> dict:
+    """Show a plugin project's migrations: applied, pending, edited-after-applied, baselines and ID drift."""
+    from tools.project import runner
+    try:
+        return runner.status(_out_path(plugin))
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def migrate_plugin(plugin: str, dry_run: bool = False, limit: int | None = None, package: bool = True) -> dict:
+    """Apply pending migrations from output/<Plugin>/migrations (NNNN_name.py, each with apply(ctx)) in order.
+
+    ctx.tool('create_global', ...) calls any tool with the plugin name filled in; ctx.call(name, ...) does not.
+    Each migration is snapshotted first and a failure restores it. Applied migrations are recorded in
+    ledger.json with a hash, and editing one afterwards is an error. Afterwards the ID registry is synced, the
+    plugin is checked against the latest baseline (check_save_compat) and, unless package is false, packaged.
+    """
+    from tools.project import runner
+    try:
+        path = _out_path(plugin)
+        res = runner.run(path, sys.modules[__name__], dry_run=dry_run, limit=limit)
+        if package and res.get('applied') and not res.get('failed'):
+            res['package'] = package_plugin(plugin)
+        return res
+    except (ValueError, FileNotFoundError) as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()

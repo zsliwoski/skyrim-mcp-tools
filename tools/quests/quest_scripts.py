@@ -6,6 +6,7 @@ from esplib.vmad import (PROP_BOOL, PROP_FLOAT, PROP_INT32, PROP_INT32_ARRAY, PR
                          PROP_STRING_ARRAY, VmadAliasScripts, VmadData, VmadFragmentData, VmadObject, VmadProperty,
                          VmadScript)
 
+from tools.core.plugin_edit import Target, resolve_target_path
 from tools.papyrus.papyrus_build import CompileError, compile_script, ensure_sources
 from tools.quests.quest_author import apply_stage
 from tools.quests.quest_core import has_index
@@ -135,6 +136,34 @@ def attach_alias_script(b, quest, target_plugin, alias, script, properties=None,
     apply_alias_script(b, target, q, alias, script, properties, source)
     target.save()
     return {'path': str(target.path), 'quest': quest, 'alias': alias, 'script': script}
+
+
+SCRIPTABLE = ['ACTI', 'DOOR', 'CONT', 'NPC_', 'FURN', 'TACT', 'MISC', 'WEAP', 'ARMO', 'BOOK', 'LIGH', 'FLOR',
+              'TREE', 'ALCH', 'INGR', 'SCRL', 'KEYM', 'AMMO', 'SLGM', 'MSTT']
+
+
+def attach_script(b, record, target_plugin, script, properties=None, source=None):
+    """Bind a script to an own base record (activator, container, door, NPC, item...). Properties follow
+    build_properties and are filled by editor ID, so the script never needs a hardcoded form ID. Other scripts on
+    the record are kept; properties already on this script survive unless given again."""
+    path = resolve_target_path(target_plugin, b.output_dir, b.data_dir)
+    target = Target(b.m, b.names, path, create=False)
+    rec = target.find_own(record, SCRIPTABLE)
+    if rec is None:
+        raise ValueError(f"record {record!r} not found in {path.name}")
+    b.target, b.plugin = target, target.plugin
+    props = build_properties(b, target, None, properties)
+    ensure_script(b, target, script, source, props)
+    vm = VmadData.from_record(rec, rec.signature) if rec.get_subrecord('VMAD') is not None else VmadData()
+    scripts = _merge_script(vm.scripts, script, props)
+    new = VmadData(version=5, obj_format=2, scripts=scripts, fragment_data=vm.fragment_data,
+                   alias_scripts=vm.alias_scripts)
+    rec.subrecords = [s for s in rec.subrecords if s.signature != 'VMAD']
+    rec.add_subrecord('VMAD', new.to_bytes(rec.signature))
+    rec.subrecords.insert(1, rec.subrecords.pop())
+    rec.modified = True
+    target.save()
+    return {'path': str(target.path), 'record': record, 'script': script}
 
 
 def attach_quest_script(b, quest, target_plugin, script, properties=None, source=None):

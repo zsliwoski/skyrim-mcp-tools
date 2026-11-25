@@ -40,6 +40,7 @@ EXPECTED_TOOLS = {
         "create_container", "create_leveled_list", "add_to_leveled_list", "create_outfit", "create_recipe",
         "create_global", "create_message", "create_activator", "create_light", "create_sound", "create_perk",
         "create_music", "duplicate_assets", "create_voice_type", "assign_voice_type", "import_voice_audio", "create_weapon", "create_armor", "set_npc_schedule",
+        "seed_ids", "check_save_compat", "release_plugin", "plugin_status", "migrate_plugin", "attach_script", "add_perk_to_skill_tree",
     }
 
 

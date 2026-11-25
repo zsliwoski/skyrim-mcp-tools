@@ -9,6 +9,10 @@ from esplib.record import GroupRecord
 from esplib.utils import FormID
 from esplib.vmad import VmadData
 
+from tools.core import idregistry
+
+idregistry.install()
+
 OFFICIAL = {'skyrim.esm', 'update.esm', 'dawnguard.esm', 'hearthfires.esm', 'dragonborn.esm', 'skyrim.esl'}
 # Records that live inside nested groups (cells, topics); overriding them needs the group chain.
 NESTED = {'CELL', 'REFR', 'ACHR', 'ACRE', 'PGRE', 'PMIS', 'PARW', 'PBEA', 'PFLA', 'PHZD', 'PCON',

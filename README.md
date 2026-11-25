@@ -95,7 +95,7 @@ what a plan needs, and see the `skyrim-skse-scripting` skill.
   skill also describes a bootstrap quest that starts a plugin's quests when it is installed mid-playthrough
 
 ### Records, items and world
-- `create_record`, `create_faction`, `create_package`, `create_container`, `create_leveled_list`, `add_to_leveled_list`, `create_outfit`, `create_recipe` (crafting and tempering), `create_global`, `create_message`, `create_activator`, `create_light`, `create_sound`, `create_perk` (ability perks), `create_music`, `create_weapon`, `create_armor` (stats by name), `set_npc_schedule` (timed sleep/eat/sandbox packages), `duplicate_assets` (own copy of a mesh and textures), `create_voice_type`, `assign_voice_type`, `import_voice_audio` (installs a recording you supply; no speech synthesis), `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
+- `create_record`, `create_faction`, `create_package`, `create_container`, `create_leveled_list`, `add_to_leveled_list`, `create_outfit`, `create_recipe` (crafting and tempering), `create_global`, `create_message`, `create_activator`, `create_light`, `create_sound`, `create_perk` (ability and entry-point perks; with `skill`, `skill_level` and `requires_perks` it gets tree conditions), `add_perk_to_skill_tree` (appends a perk as a node of a skill tree, e.g. Alchemy, by overriding the skill's AVIF from the winning plugin such as Ordinator; add all the base plugin's masters to the patch first), `create_music`, `create_weapon`, `create_armor` (stats by name), `set_npc_schedule` (timed sleep/eat/sandbox packages), `duplicate_assets` (own copy of a mesh and textures), `create_voice_type`, `assign_voice_type`, `import_voice_audio` (installs a recording you supply; no speech synthesis), `clone_record`, `clone_records`, `edit_record` (raw bytes or named fields such as
   `{"sig": "ENCH", "field": "cost", "value": 250}`, or `record_flags`), `copy_subrecords`, `drop_conditions`,
   `remove_records`. `reload_tools` reloads the `tools.*` Python modules in the running server (not `server.py`). `install_plugin` prunes stale fragment scripts and reports a locked file (Skyrim running); `deploy_plugin` validates, packages and installs in one call. `clone_record` clears the Non-Playable flag on ARMO and WEAP clones so they show in the inventory.
 - `diff_records` (field-aware comparison of two records) and `get_record(full=...)` with decoded `fields`
@@ -186,6 +186,12 @@ embeddings).
 
 ### Plugin lifecycle
 - `snapshot_plugin`, `list_snapshots`, `restore_snapshot`, `diff_plugin`
+- Patching a released plugin without breaking saves: `seed_ids` (stable ID registry in `output/<Plugin>/ids.json`;
+  IDs are never reused and `remove_records` keeps registered records), `release_plugin` (baseline in
+  `output/<Plugin>/baselines/`), `check_save_compat` (removed/retyped records, reused IDs, script changes),
+  `migrate_plugin` / `plugin_status` (ordered `NNNN_name.py` migrations with `apply(ctx)` in
+  `output/<Plugin>/migrations/`, a hashed `ledger.json`, snapshot and rollback per migration) and `attach_script`
+  (script properties filled by editor ID; `check_script` warns on hardcoded `GetFormFromFile` IDs)
 - `validate_plugin` (also warns about zero-cost enchantments and old header versions), `audit_plugin`, and
   `audit_voice` (per-NPC voice type, recorded lines and combat lines; `audit_plugin` includes its warnings)
 - `install_plugin` (copy to Data, with dry run), `deploy_plugin` (validate, then `mode` "package", "install" or

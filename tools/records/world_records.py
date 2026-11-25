@@ -148,8 +148,25 @@ ENTRY_FUNCTIONS = {'set': 1, 'add': 2, 'multiply': 3}
 ENTRY_POINTS = {'pickpocket_chance': (56, 3)}
 
 
+SKILL_INDEX = {'onehanded': 6, 'twohanded': 7, 'archery': 8, 'marksman': 8, 'block': 9, 'smithing': 10,
+               'heavyarmor': 11, 'lightarmor': 12, 'pickpocket': 13, 'lockpicking': 14, 'sneak': 15, 'alchemy': 16,
+               'speech': 17, 'speechcraft': 17, 'alteration': 18, 'conjuration': 19, 'destruction': 20,
+               'illusion': 21, 'restoration': 22, 'enchanting': 23}
+
+
+def skill_index(skill):
+    key = re.sub(r'^av|[^a-z]', '', str(skill).lower())
+    if key not in SKILL_INDEX:
+        raise ValueError(f"unknown skill {skill!r}; use one of {', '.join(sorted(SKILL_INDEX))}")
+    return SKILL_INDEX[key]
+
+
+def _ctda(value, func, param1=0, op=0):
+    return struct.pack('<B3xfHHIIIII', op, float(value), func, 0, param1, 0, 0, 0, 0xFFFFFFFF)
+
+
 def create_perk(b, target_plugin, editor_id, abilities=None, name=None, description='', hidden=True, playable=True,
-                entry_points=None):
+                entry_points=None, skill=None, skill_level=0, requires_perks=None):
     """PERK that grants spells (abilities, e.g. from create_spell kind=ability) once the player has it, and/or
     changes a game value through entry points: a list of {entry_point, function, value, tabs?}. entry_point is a
     number (the Skyrim perk entry point ID) or a name in ENTRY_POINTS; function is set, add or multiply (or the
@@ -160,13 +177,23 @@ def create_perk(b, target_plugin, editor_id, abilities=None, name=None, descript
     for ep in entry_points:
         if not isinstance(ep, dict) or 'value' not in ep or 'entry_point' not in ep:
             raise ValueError("each entry point needs entry_point and value")
-    path, target, spells = _new(b, target_plugin, editor_id, 'PERK', [(a, ['SPEL']) for a in abilities or []])
+    if skill_level and not skill:
+        raise ValueError("skill_level needs skill")
+    skill_av = skill_index(skill) if skill else None
+    path, target, spells = _new(b, target_plugin, editor_id, 'PERK', [(a, ['SPEL']) for a in abilities or []]
+                                + [(r, ['PERK']) for r in requires_perks or []])
+    required = spells[len(abilities or []):]
+    spells = spells[:len(abilities or [])]
     oid = _start(b, target)
     rec = Record('PERK', FormID(b.own(oid)), 0)
     rec.add_subrecord('EDID', z(editor_id))
     if name:
         rec.add_subrecord('FULL', z(name))
     rec.add_subrecord('DESC', z(description))
+    if skill_av is not None and skill_level:
+        rec.add_subrecord('CTDA', _ctda(skill_level, 0x115, skill_av, op=0x60))
+    for fid in required:
+        rec.add_subrecord('CTDA', _ctda(1, 0x1C0, b.local(fid)))
     rec.add_subrecord('DATA', bytes([0, 0, 1, int(playable), int(hidden)]))
     for fid in spells:
         rec.add_subrecord('PRKE', bytes([1, 0, 0]))
