@@ -46,7 +46,7 @@ def test_activator_copies_mesh_and_light_packs_data(sandbox):
     assert "carried" in server.create_light("World.esp", "Torch", flags=["carried"])["error"]
 
 
-def test_attach_script_fills_properties_by_editor_id(sandbox):
+def test_attach_script_fills_properties_by_editor_id(sandbox, compiler_available):
     from esplib.vmad import VmadData
     _ok(server.create_global("World.esp", "Counter", 0))
     _ok(server.create_activator("World.esp", "Pull", "Pull", clone_from="TestActivator"))
